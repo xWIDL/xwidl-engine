@@ -13,6 +13,7 @@ import Data.Maybe (fromJust)
 import Data.Char (toLower)
 import qualified Data.Map as M
 import Network.Simple.TCP
+import Text.PrettyPrint.Leijen (pretty)
 import Network.Socket (socketToHandle)
 import Control.Concurrent
 import System.IO
@@ -46,15 +47,20 @@ initState spec handler = SessionState {
 type Session = StateT SessionState IO
 
 run :: Spec -> IO ()
-run spec = serve (Host "localhost") "8888" $ \(sock, addr) -> do
-    putStrLn $ "TCP connection established from " ++ show addr
-    handler <- socketToHandle sock ReadWriteMode
-    hSetBuffering handler NoBuffering
-    let _traits = translateSpec spec
-    evalStateT (withTarget "Main" loop) (initState spec handler)
+run spec = do
+    hSetBuffering stdout NoBuffering
+    putStrLn "Engine launched, waiting for connection"
+    serve (Host "localhost") "8888" $ \(sock, addr) -> do
+        putStrLn $ "TCP connection established from " ++ show addr
+        handler <- socketToHandle sock ReadWriteMode
+        hSetBuffering handler NoBuffering
+        let traits = translateSpec spec
+        putStrLn "// ------ traits ------- "
+        mapM_ (print . pretty) traits
+        evalStateT loop (initState spec handler)
 
 -- Emit code inside named top-level method target
-withTarget :: String -> Session () -> Session ()
+withTarget :: String -> Session () -> Session TopLevelMethod
 withTarget newTarget emit = do
     oldTarget <- _target <$> get
     modify (\s -> s { _target = newTarget })
@@ -64,9 +70,8 @@ withTarget newTarget emit = do
 
     modify (\s -> s { _target = oldTarget })
 
-    -- tlms <- _tlms <$> get
-    -- return $ fromJust (M.lookup newTarget tlms)
-    return ()
+    tlms <- _tlms <$> get
+    return $ fromJust (M.lookup newTarget tlms)
     where
         initTargetMethod = TopLevelMethod {
             _tlName = newTarget,
@@ -81,7 +86,7 @@ loop = do
     line <- BSL.fromStrict <$> liftIO (BS.hGetLine handler)
     reply <- case (decode line :: Maybe Command) of
                 Just cmd -> do
-                    liftIO $ putStrLn ("[REQ] " ++ show cmd)
+                    liftIO $ putStrLn ("// [REQ] " ++ show cmd)
                     dispatch cmd
                 Nothing  -> do
                     liftIO $ putStrLn "Invalid request"
@@ -132,10 +137,22 @@ interpretExpr de je = inferType je >>= \case
 
 handleInvoke :: LVar -> Name -> [JsExpr] -> Session Reply
 handleInvoke lvar x args = do
-    v <- compileLVar lvar
-    args' <- mapM compileExpr args
-    addStmt (SInvoke v (unName x) args')
-    return Sat -- XXX: dafny-bridge
+    tlm <- withTarget "Main" $ do
+        v <- compileLVar lvar
+        args' <- mapM compileExpr args
+        addStmt (SInvoke v (unName x) args')
+    getSat tlm
+
+getSat :: TopLevelMethod -> Session Reply
+getSat tlm = do
+    liftIO $ putStrLn "// ------ TLM ------- "
+    liftIO $ print (pretty tlm)
+    liftIO $ putStrLn "sat/unsat?"
+    ans <- liftIO $ getLine
+    case ans of
+        "sat" -> return Sat
+        "unsat" -> return Unsat
+        _ -> getSat tlm
 
 compileLVar :: LVar -> Session String
 compileLVar = \case
