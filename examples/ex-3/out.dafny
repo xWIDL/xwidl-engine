@@ -1,0 +1,22 @@
+// ===== Traits ======
+trait Bar {
+
+}
+trait Foo {
+    var spawn_bars_count: int
+    
+    method new_0() returns (ret: Foo)
+    ensures ret != null && this.spawn_bars_count == 0
+    
+    method spawn_bar() returns (ret: Bar)
+    ensures ret != null && this.spawn_bars_count == old(this.spawn_bars_count) + 1
+    
+}
+// ===== TopLevelMethods =====
+method Main(foo: Foo)
+    requires foo != null {
+    var foo_0 := foo.new_0();
+    var bar_1 := foo_0.spawn_bar();
+    assert bar_1 != null;
+    assert foo_0.spawn_bars_count == 1;
+}

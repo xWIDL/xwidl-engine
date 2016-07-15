@@ -1,0 +1,21 @@
+// ===== Traits ======
+trait Bar {
+    method new_0() returns (ret: Bar)
+    ensures ret != null
+    
+}
+trait Foo {
+    method new_0(bar: Bar) returns (ret: Foo)
+    ensures if bar != null then ret != null else ret == null
+    
+}
+// ===== TopLevelMethods =====
+method Main(bar: Bar, foo: Foo)
+    requires foo != null && bar != null {
+    var bar_0 := bar.new_0();
+    assert bar_0 != null;
+    var foo_1 := foo.new_0(null);
+    assert foo_1 == null;
+    var foo_2 := foo.new_0(bar_0);
+    assert foo_2 != null;
+}
