@@ -2,12 +2,10 @@ module Session (run) where
 
 import Translate
 import Spec
-import Command
 import Dafny
 import JS.Type
 import JS.Platform
 import Model
-import Control.Monad.Free
 import Control.Monad.State
 import Data.Maybe (fromJust)
 import Data.Char (toLower)
@@ -15,7 +13,6 @@ import qualified Data.Map as M
 import Network.Simple.TCP
 import Text.PrettyPrint.Leijen (pretty)
 import Network.Socket (socketToHandle)
-import Control.Concurrent
 import System.IO
 import Data.Aeson
 import qualified Data.ByteString.Lazy as BSL
@@ -84,14 +81,14 @@ loop :: Session ()
 loop = do
     handler <- _handler <$> get
     line <- BSL.fromStrict <$> liftIO (BS.hGetLine handler)
-    reply <- case (decode line :: Maybe Command) of
+    mReply <- case (decode line :: Maybe Command) of
                 Just cmd -> do
                     liftIO $ putStrLn ("// [REQ] " ++ show cmd)
                     dispatch cmd
                 Nothing  -> do
                     liftIO $ putStrLn "Invalid request"
                     return Nothing
-    case reply of
+    case mReply of
         Nothing -> do
             return ()
         Just reply -> do
@@ -200,7 +197,7 @@ inferType = \case
     JNew iname _ -> return (JTyObj iname)
     where
         findIfaceMethodRetTy iname fname = do
-            method <- lookupMethod iname fname
+            method <- lookupOperation iname fname
             case _imRet method of
                 Just ty -> return (iTypeToJsType ty)
                 Nothing -> return (JTyPrim PTyNull)
@@ -291,33 +288,33 @@ lookupBinding r = do
     JsObj iname <- lookupObj r
     return (toLowerFirst (unName iname) ++ "_" ++ show (unJRef r))
 
-lookupMethod :: Name -> Name -> Session InterfaceMethod
-lookupMethod i f = do
-    Spec ifaces <- _spec <$> get
+lookupOperation :: Name -> Name -> Session Operation
+lookupOperation i f = do
+    ifaces <- filterIface . _spec <$> get
     case M.lookup i ifaces of
-        Just iface -> case M.lookup f (_methods iface) of
+        Just iface -> case M.lookup f (_operations iface) of
             Just method -> return method
             Nothing -> error $ "Invalid method name: " ++ show f
         Nothing -> error $ "Invalid Interface name: " ++ show i
 
-lookupAttr :: Name -> Name -> Session (Maybe IType)
+lookupAttr :: Name -> Name -> Session (Maybe    Type)
 lookupAttr i a = do
-    Spec ifaces <- _spec <$> get
+    ifaces <- filterIface . _spec <$> get
     case M.lookup i ifaces of
-        Just iface -> return $ M.lookup a (_ghostStates iface)
+        Just iface -> return $ M.lookup a (_ghostAttrs iface)
         Nothing    -> error $ "Invalid Interface name: " ++ show i
 
-iTypeToJsType :: IType -> JsType
+iTypeToJsType :: Type -> JsType
 iTypeToJsType = \case
     ITyInterface x -> JTyObj x
     ITyDOMString   -> JTyPrim PTyString
     ITyNullable (ITyInterface x) -> JTyObj x
     ITyInt         -> JTyPrim PTyInt
-    ty -> error $ "Can't translate IType: " ++ show ty
+    ty -> error $ "Can't translate Type: " ++ show ty
 
 findCons :: Name -> [JsType] -> Session String
 findCons iname argTypes = do
-    Spec ifaces <- _spec <$> get
+    ifaces <- filterIface . _spec <$> get
     case M.lookup iname ifaces of
         Just iface -> do
             let consTypes = zip [(0 :: Int)..] (map _icArgs (_constructors iface))
@@ -326,10 +323,10 @@ findCons iname argTypes = do
                 _ -> error $ "Failed to find a proper constructor: " ++ show argTypes
         Nothing -> error $ "Invalid Interface name: " ++ show iname
     where
-        match :: [(Name, IType)] -> Bool
+        match :: [Argument] -> Bool
         match consTypes =
             if length consTypes == length argTypes then
-                let consTypes' = (map (iTypeToJsType . snd) consTypes)
+                let consTypes' = map (iTypeToJsType . (\(Argument _ ty _) -> ty)) consTypes
                 in  and (map (uncurry typeEquiv) (zip consTypes' argTypes))
             else False
 
@@ -337,3 +334,9 @@ typeEquiv :: JsType -> JsType -> Bool
 typeEquiv (JTyPrim PTyNull) (JTyObj _) = True
 typeEquiv (JTyObj _) (JTyPrim PTyNull) = True
 typeEquiv t1 t2 = t1 == t2
+
+filterIface :: Spec -> M.Map Name Interface
+filterIface (Spec m) = foldr f M.empty (M.toList m)
+    where
+        f (x, DefInterface i) im = M.insert x i im
+        f _ im = im

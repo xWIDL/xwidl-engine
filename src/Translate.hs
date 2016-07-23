@@ -11,12 +11,14 @@ import Model
 import qualified Data.Map as M
 
 translateSpec :: Spec -> [Trait]
-translateSpec (Spec ifaces) = map translateIface (M.elems ifaces)
+translateSpec (Spec ifaces) = flip map (M.elems ifaces) $ \case
+    DefInterface i -> translateIface i
+    other -> error "can't translate other"
 
 translateIface :: Interface -> Trait
-translateIface (Interface iname constructors ghostStates methods) =
+translateIface (Interface iname constructors _attrs gAttrs methods) =
     Trait (unName iname)
-          (map (\(x, ty) -> (unName x, iTypeToDyType ty)) (M.toList ghostStates))
+          (map (\(x, ty) -> (unName x, iTypeToDyType ty)) (M.toList gAttrs))
           (map (translateConstructor iname) (zip [0..] constructors)
            ++ map translateMethod (M.elems methods))
 
@@ -24,28 +26,28 @@ translateConstructor :: Name -> (Int, InterfaceConstructor) -> TraitMemberMethod
 translateConstructor iname (idx, InterfaceConstructor{..}) = tmm
     where tmm = TraitMemberMethod {
         _tmName = "new_" ++ show idx,
-        _tmArgs = map (\(x, ity) -> (unName x, iTypeToDyType ity)) _icArgs,
+        _tmArgs = map (\(Argument x ity _) -> (unName x, iTypeToDyType ity)) _icArgs,
         _tmRet  = Just ("ret", DTyClass (unName iname)),
         _tmEnsures = _icEnsures,
         _tmRequires = _icRequires
         -- _tmImpl = Nothing
     }
 
-translateMethod :: InterfaceMethod -> TraitMemberMethod
-translateMethod InterfaceMethod{..} = tmm
+translateMethod :: Operation -> TraitMemberMethod
+translateMethod Operation{..} = tmm
     where tmm = TraitMemberMethod {
         _tmName = unName _imName,
-        _tmArgs = map (\(x, ity) -> (unName x, iTypeToDyType ity)) _imArgs,
+        _tmArgs = map (\(Argument x ity _) -> (unName x, iTypeToDyType ity)) _imArgs,
         _tmRet  = (("ret",) . iTypeToDyType) <$> _imRet,
         _tmEnsures = _imEnsures,
         _tmRequires = _imRequires
         -- _tmImpl = _imEffects
     }
 
-iTypeToDyType :: IType -> DyType
+iTypeToDyType :: Type -> DyType
 iTypeToDyType = \case
     ITyInterface x -> DTyClass (unName x)
     ITyDOMString   -> DTyString
     ITyNullable (ITyInterface x) -> DTyClass (unName x)
     ITyInt -> DTyInt
-    ty -> error $ "Can't translate IType: " ++ show ty
+    ty -> error $ "Can't translate Type: " ++ show ty

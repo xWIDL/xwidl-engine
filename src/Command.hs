@@ -2,10 +2,8 @@
 
 module Command where
 
-import Model
 import JS.Type
 import JS.Platform
-import Dafny
 import Control.Monad.Free
 
 -- Free-Monad Style DSL
