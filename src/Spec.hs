@@ -7,7 +7,7 @@ import qualified Language.WebIDL.AST as W
 import Prelude hiding (Enum)
 
 data Spec = Spec {
-    _interfaces :: M.Map Name Definition
+    _defs :: M.Map Name Definition
 }
 
 {-
@@ -65,8 +65,12 @@ data InterfaceConstructor = InterfaceConstructor {
     _icRequires :: Maybe String
 }
 
-data Type = ITyInterface Name
-          | ITyDOMString
-          | ITyNullable Type
-          | ITyInt
+data Type = TyInterface Name
+          | TyDOMString
+          | TyNullable Type
+          | TyInt | TyFloat | TyAny
+          | TyBoolean | TyObject
+          | TyBuiltIn Name
+          | TyArray Type
+          | TyUnion [Type]
           deriving (Show)

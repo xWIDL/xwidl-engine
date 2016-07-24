@@ -46,8 +46,8 @@ translateMethod Operation{..} = tmm
 
 iTypeToDyType :: Type -> DyType
 iTypeToDyType = \case
-    ITyInterface x -> DTyClass (unName x)
-    ITyDOMString   -> DTyString
-    ITyNullable (ITyInterface x) -> DTyClass (unName x)
-    ITyInt -> DTyInt
+    TyInterface x -> DTyClass (unName x)
+    TyDOMString   -> DTyString
+    TyNullable (TyInterface x) -> DTyClass (unName x)
+    TyInt -> DTyInt
     ty -> error $ "Can't translate Type: " ++ show ty

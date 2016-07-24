@@ -306,10 +306,10 @@ lookupAttr i a = do
 
 iTypeToJsType :: Type -> JsType
 iTypeToJsType = \case
-    ITyInterface x -> JTyObj x
-    ITyDOMString   -> JTyPrim PTyString
-    ITyNullable (ITyInterface x) -> JTyObj x
-    ITyInt         -> JTyPrim PTyInt
+    TyInterface x -> JTyObj x
+    TyDOMString   -> JTyPrim PTyString
+    TyNullable (TyInterface x) -> JTyObj x
+    TyInt         -> JTyPrim PTyInt
     ty -> error $ "Can't translate Type: " ++ show ty
 
 findCons :: Name -> [JsType] -> Session String
