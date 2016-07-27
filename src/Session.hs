@@ -10,6 +10,7 @@ import Control.Monad.State
 import Data.Maybe (fromJust)
 import Data.Char (toLower)
 import qualified Data.Map as M
+import Control.Monad (forM_)
 import Network.Simple.TCP
 import Text.PrettyPrint.Leijen (pretty)
 import Network.Socket (socketToHandle)
@@ -59,18 +60,18 @@ run spec = do
         evalStateT loop (initState spec handler)
 
 -- Emit code inside named top-level method target
-withTarget :: String -> Session () -> Session TopLevelMethod
+withTarget :: String -> Session a -> Session (TopLevelMethod, a)
 withTarget newTarget emit = do
     oldTarget <- _target <$> get
     modify (\s -> s { _target = newTarget })
     modify (\s -> s { _tlms = M.insert newTarget initTargetMethod (_tlms s) })
 
-    emit
+    a <- emit
 
     modify (\s -> s { _target = oldTarget })
 
     tlms <- _tlms <$> get
-    return $ fromJust (M.lookup newTarget tlms)
+    return (fromJust (M.lookup newTarget tlms), a)
     where
         initTargetMethod = TopLevelMethod {
             _tlName = newTarget,
@@ -99,18 +100,10 @@ loop = do
 
 dispatch :: Command -> Session (Maybe Reply)
 dispatch = \case
-    -- Free (Eval e k) -> do
-    --     e' <- compileExpr e
-    --     val <- interpretExpr e' e
-    --     handle (k val)
-    CInvoke lvar x args -> do
-        reply <- handleInvoke lvar x args
-        return (Just reply) -- XXX: connect with Dafny
-    -- Free (Assert e next) -> do
-    --     handleAssert e
-    --     handle next
+    CInvoke lvar x args -> Just <$> handleInvoke lvar x args
+    CEval e mDomains -> Just <$> handleEval e mDomains
+    CAssert e -> Just <$> handleAssert e
     CEnd -> return Nothing
-
 {-
     While assert/invoke are *ephemeral* (not really, since ghost states might be affected),
     eval *could* have persistent effect if some constructive operation is involved, like
@@ -136,18 +129,44 @@ interpretExpr de je = inferType je >>= \case
 
 handleInvoke :: LVar -> Name -> [JsExpr] -> Session Reply
 handleInvoke lvar x args = do
-    tlm <- withTarget "Main" $ do
+    (tlm, _) <- withTarget "Main" $ do
         v <- compileLVar lvar
         args' <- mapM compileExpr args
         addStmt (SInvoke v (unName x) args')
-    getSat tlm
+    getSat tlm Nothing
 
-getSat :: TopLevelMethod -> Session Reply
-getSat tlm = do
+handleEval :: JsExpr -> Maybe [JsExpr] -> Session Reply
+handleEval e mDomains = do
+    ty <- inferType e
+    case (ty, mDomains) of
+        (JTyPrim _, Just domains) -> handlePrimEval e domains
+        (JTyObj _, Nothing) -> handleObjEval e
+        _ -> error "Invalid eval"
+
+handlePrimEval :: JsExpr -> [JsExpr] -> Session Reply
+handlePrimEval e domains = do
+    (tlm, _) <- withTarget "Main" $ do
+        de <- compileExpr e
+        addStmt (SVarAssign "prim_val" de)
+        forM_ domains $ \dom -> do
+            dome <- compileExpr dom
+            addStmt (SAssert dome)
+    getSat tlm Nothing
+
+handleObjEval :: JsExpr -> Session Reply
+handleObjEval e = do
+    (tlm, r) <- withTarget "Main" $ do
+        e' <- compileExpr e
+        JVRef r <- interpretExpr e' e
+        return r
+    getSat tlm (Just r)
+
+getSat :: TopLevelMethod -> Maybe JRef -> Session Reply
+getSat tlm mRef = do
     let src = show (pretty tlm)
     ans <- liftIO $ askDafny REST src
     case ans of
-        Right Verified -> return Sat
+        Right Verified -> return (Sat mRef)
         Right Failed -> return Unsat
         Left err -> error $ "Dafny connection error: " ++ err
 
@@ -158,10 +177,13 @@ compileLVar = \case
         _ -> error "Unable to process invocation on non-JRef type now"
     LInterface iname -> getPlatObj iname
 
-handleAssert :: JsExpr -> Session ()
+handleAssert :: JsExpr -> Session Reply
 handleAssert e = do
-    e' <- compileExpr e
-    addStmt (SAssert e')
+    (tlm, _) <- withTarget "Main" $ do
+        e' <- compileExpr e
+        addStmt (SAssert e')
+    getSat tlm Nothing
+
 {-
     JVal  -> DyVal
     JCall -> DCall

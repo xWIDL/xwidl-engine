@@ -6,14 +6,13 @@ module Translate where
 import Spec
 import Dafny
 import JS.Type
-import Model
 
 import qualified Data.Map as M
 
 translateSpec :: Spec -> [Trait]
 translateSpec (Spec ifaces) = flip map (M.elems ifaces) $ \case
     DefInterface i -> translateIface i
-    other -> error "can't translate other"
+    other -> error $ "can't translate " ++ show other
 
 translateIface :: Interface -> Trait
 translateIface (Interface iname constructors _attrs gAttrs methods) =
