@@ -1,0 +1,6 @@
+interface Bar {};
+
+interface Foo {
+    ///- requires bar != null
+    void use_bar(Bar? bar);
+};

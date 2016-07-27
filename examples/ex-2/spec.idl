@@ -1,0 +1,11 @@
+[
+///- ensures ret != null
+Constructor
+]
+interface Bar {};
+
+[
+///- ensures if bar != null then ret != null else ret == null
+Constructor(Bar? bar)
+]
+interface Foo {};

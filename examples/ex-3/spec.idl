@@ -1,0 +1,14 @@
+interface Bar {};
+
+[
+Constructor
+///- ensures ret != null && this.spawn_bars_count == 0
+]
+interface Foo {
+    ///- ghost attribute int spawn_bars_count;
+
+    Bar spawn_bar();
+    ///- ensures ret != null && this.spawn_bars_count == old(this.spawn_bars_count) + 1;
+
+    // Well, this is a hack, we can write this as *effects* but this needs further work
+};

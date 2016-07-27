@@ -9,36 +9,6 @@ import Dafny
 import qualified Data.Map as M
 
 {-
-[
-Constructor
-//- ensures ret != null
-]
-interface Bar {};
-
-[
-Constructor(Bar? bar)
-//- ensures if bar != null then ret != null else ret == null
-]
-interface Foo {};
--}
-
-spec :: Spec
-spec = Spec (M.fromList [(Name "Bar", ifBar), (Name "Foo", ifFoo)])
-    where
-        ifBar = Interface (Name "Bar") [consBar] M.empty M.empty
-        consBar = InterfaceConstructor {
-            _icArgs = [],
-            _icRequires = Nothing,
-            _icEnsures = Just "ret != null"
-        }
-        ifFoo = Interface (Name "Foo") [consFooWithBar] M.empty M.empty
-        consFooWithBar = InterfaceConstructor {
-            _icArgs = [(Name "bar", ITyNullable (ITyInterface (Name "Bar")))],
-            _icRequires = Nothing,
-            _icEnsures  = Just "if bar != null then ret != null else ret == null"
-        }
-
-{-
 var bar = new Bar();
 // assert bar != null;
 var foo1 = new Foo(null);

@@ -26,6 +26,7 @@ data Definition = DefInterface Interface
                 | DefDictionary Dictionary
                 | DefException Exception
                 | DefEnum Enum
+                deriving Show
 
 data Interface = Interface {
     _iName :: Name,
@@ -33,20 +34,21 @@ data Interface = Interface {
     _attrs :: M.Map Name Type,
     _ghostAttrs :: M.Map Name Type,
     _operations :: M.Map Name Operation
-}
+} deriving Show
 
-data Dictionary = Dictionary Name [DictionaryMember]
+data Dictionary = Dictionary Name [DictionaryMember] deriving Show
 
-data DictionaryMember = DictionaryMember Type Name (Maybe W.Default)
+data DictionaryMember = DictionaryMember Type Name (Maybe W.Default) deriving Show
 
-data Exception = Exception Name [ExceptionMember]
+data Exception = Exception Name [ExceptionMember] deriving Show
 
 data ExceptionMember = ExConst Const
                      | ExField Type Name
+                     deriving Show
 
-data Const = Const Type Name W.ConstValue
+data Const = Const Type Name W.ConstValue deriving Show
 
-data Enum = Enum Name [String]
+data Enum = Enum Name [String] deriving Show
 
 data Operation = Operation {
     _imName :: Name,
@@ -55,15 +57,15 @@ data Operation = Operation {
     _imEnsures :: Maybe String,
     _imRequires :: Maybe String
     -- _imEffects :: Maybe String -- TODO
-}
+} deriving Show
 
-data Argument = Argument Name Type (Maybe W.Default)
+data Argument = Argument Name Type (Maybe W.Default) deriving Show
 
 data InterfaceConstructor = InterfaceConstructor {
     _icArgs :: [Argument],
     _icEnsures :: Maybe String,
     _icRequires :: Maybe String
-}
+} deriving Show
 
 data Type = TyInterface Name
           | TyDOMString

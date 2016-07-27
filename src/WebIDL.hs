@@ -1,5 +1,5 @@
 -- Translate WebIDL into xWIDL
-module WebIDL where
+module WebIDL (transIfaces) where
 
 import qualified Language.WebIDL.AST as W
 import Spec
@@ -18,10 +18,22 @@ data TransState = TransState {
 }
 
 -- Interface translation
-type Trans = ExceptT String (State TransState)
+type Trans = StateT TransState (Except String)
 
-transIface :: W.Interface Tag -> Trans ()
-transIface (W.Interface _ extAttrs iname mInherit members) = do
+-- Should be compatible with all kinds of definitions in future
+transIfaces :: [W.Interface Tag] -> Either String (M.Map Name Definition)
+transIfaces ifaces = M.delete dummyName . _emitted <$> runExcept (execStateT m initState)
+    where
+        initState = TransState {
+            _emitted = M.empty,
+            _focus   = dummyIface
+        }
+        dummyName = Name ""
+        m = mapM_ transIface' ifaces >> replaceFocus dummyIface
+        dummyIface = DefInterface (Interface dummyName [] M.empty M.empty M.empty)
+
+transIface' :: W.Interface Tag -> Trans ()
+transIface' (W.Interface _ extAttrs iname mInherit members) = do
     replaceFocus (DefInterface (Interface (i2n iname) [] M.empty M.empty M.empty))
     case mInherit of
         Just pid -> transIfaceInherit pid
@@ -35,6 +47,9 @@ transExtAttr = \case
         let (mEns, mReq) = analyzeConsAnn $ _comment tag
         args' <- mapM transArg args
         emitConstructor (InterfaceConstructor args' mEns mReq)
+    W.ExtendedAttributeNoArgs tag (W.Ident "Constructor") -> do
+        let (mEns, mReq) = analyzeConsAnn $ _comment tag
+        emitConstructor (InterfaceConstructor [] mEns mReq)
     _ -> return () -- TODO
 
 transIfaceMember :: W.InterfaceMember Tag -> Trans ()
@@ -126,25 +141,25 @@ inspectAttrComment = mapM_ collectGhostAttr .
                      filter isGhostAttrComment
     where
         collectGhostAttr s = do
-            let attrStr = drop 5 (strip s)
+            let attrStr = strip $ drop 8 (strip s)
             case tryParse pAttribute attrStr of
                 Right (W.Attribute _ _mInheritModifier _mReadOnlyModifer ty x) -> do
                     ty' <- transType ty
                     emitGhostAttr ty' (i2n x)
                 Left err -> throwError $ "Parse ghost attribute error: " ++ show err
-        isGhostAttrComment  = startswith "ghost" . strip
+        isGhostAttrComment  = startswith "/- ghost" . strip
 
 analyzeConsAnn :: [String] -> (Maybe String, Maybe String)
 analyzeConsAnn = analyzeFunAnn
 
 analyzeFunAnn :: [String] -> (Maybe String, Maybe String)
 analyzeFunAnn blocks =
-    let ens      = fmap strip $ listToMaybe $ filter isEnsureComment blocks
-        req      = fmap strip $ listToMaybe $ filter isRequireComment blocks
+    let ens      = fmap (strip . drop 10 . strip) $ listToMaybe $ filter isEnsureComment blocks
+        req      = fmap (strip . drop 11 . strip) $ listToMaybe $ filter isRequireComment blocks
     in  (ens, req)
     where
-        isEnsureComment  = startswith "ensures" . strip
-        isRequireComment = startswith "requires" . strip
+        isEnsureComment  = startswith "/- ensures" . strip
+        isRequireComment = startswith "/- requires" . strip
 
 analyzeOpAnn :: [String] -> Trans (Maybe String, Maybe String)
 analyzeOpAnn blocks = do
@@ -169,7 +184,7 @@ emitConstructor cons =
                       focus' = iface { _constructors = cons : _constructors iface }
                   in  s { _focus = DefInterface focus' })
 
-emitOp :: Operation -> ExceptT String (State TransState) ()
+emitOp :: Operation -> Trans ()
 emitOp op =
     modify (\s -> let DefInterface iface = (_focus s)
                       focus' = iface { _operations = M.insert (_imName op) op (_operations iface) }
