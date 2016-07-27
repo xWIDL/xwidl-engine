@@ -3,19 +3,19 @@ import Spec
 
 import qualified Data.Map as M
 import JS.Type
+import WebIDL
+import Language.WebIDL.Parser
+import qualified Language.WebIDL.AST as W
+import Translate
 
-spec :: Spec
-spec = Spec (M.fromList [(Name "Bar", ifBar), (Name "Foo", ifFoo)])
-    where
-        ifBar = Interface (Name "Bar") [] M.empty M.empty
-        ifFoo = Interface (Name "Foo") [] M.empty (M.fromList [(Name "use_bar", mUseBar)])
-        mUseBar = InterfaceMethod {
-            _imName = Name "use_bar",
-            _imArgs = [(Name "bar", ITyNullable (ITyInterface (Name "Bar")))],
-            _imRet  = Nothing,
-            _imEnsures = Nothing,
-            _imRequires = Just "bar != null"
-            -- _imEffects = Nothing
-        }
+import qualified Data.Map as M
 
-main = run spec
+main = do
+    result <- parseIDL <$> readFile "examples/ex-1/spec.idl"
+    case result of
+        Right defs -> do
+            let ifaces = map (\(W.DefInterface i) -> i) defs -- FIXME
+            case transIfaces ifaces of
+                Right mDefs -> run (Spec mDefs)
+                Left err -> putStrLn err
+        Left err -> print err

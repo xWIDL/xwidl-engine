@@ -18,6 +18,8 @@ import Data.Aeson
 import qualified Data.ByteString.Lazy as BSL
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC
+import Dafny.Request
+import Dafny.Analyze
 
 data SessionState = SessionState {
     -- Abstract heap
@@ -142,14 +144,12 @@ handleInvoke lvar x args = do
 
 getSat :: TopLevelMethod -> Session Reply
 getSat tlm = do
-    liftIO $ putStrLn "// ------ TLM ------- "
-    liftIO $ print (pretty tlm)
-    liftIO $ putStrLn "sat/unsat?"
-    ans <- liftIO $ getLine
+    let src = show (pretty tlm)
+    ans <- liftIO $ askDafny REST src
     case ans of
-        "sat" -> return Sat
-        "unsat" -> return Unsat
-        _ -> getSat tlm
+        Right Verified -> return Sat
+        Right Failed -> return Unsat
+        Left err -> error $ "Dafny connection error: " ++ err
 
 compileLVar :: LVar -> Session String
 compileLVar = \case
