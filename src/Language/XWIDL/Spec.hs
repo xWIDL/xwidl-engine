@@ -36,6 +36,7 @@ data Definition = DefInterface Interface
 
 data Interface = Interface {
     _iName :: Name,
+    _iInherit :: Maybe Name,
     _constructors :: [InterfaceConstructor],
     _attrs :: M.Map Name Type,
     _ghostAttrs :: M.Map Name Type,
@@ -44,6 +45,7 @@ data Interface = Interface {
 
 data Dictionary = Dictionary {
   _dname :: Name,
+  _dInherit :: Maybe Name,
   _dmembers :: [DictionaryMember]
 } deriving Show
 
@@ -51,7 +53,11 @@ data Callback = Callback Name (Maybe Type) [Argument] deriving Show
 
 data DictionaryMember = DictionaryMember Type Name (Maybe W.Default) deriving Show
 
-data Exception = Exception Name [ExceptionMember] deriving Show
+data Exception = Exception {
+  _eName    :: Name,
+  _eInherit :: Maybe Name,
+  _emembers :: [ExceptionMember]
+} deriving Show
 
 data ExceptionMember = ExConst Const
                      | ExField Type Name

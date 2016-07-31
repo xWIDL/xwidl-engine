@@ -1,7 +1,7 @@
 -- Translation from xIWDL spec to Dafny traits
 {-# LANGUAGE TupleSections #-}
 
-module Language.Dafny.Translate where
+module Language.Dafny.Translate (translateSpec) where
 
 import Language.XWIDL.Spec
 import Language.Dafny.AST
@@ -9,15 +9,30 @@ import Language.JS.Type
 
 import qualified Data.Map as M
 
-translateSpec :: Spec -> [Trait]
-translateSpec (Spec ifaces _ _ _ _) = map translateIface (M.elems ifaces)
+import Control.Monad.Reader
+import Control.Monad.Except
 
-translateIface :: Interface -> Trait
-translateIface (Interface iname constructors _attrs gAttrs methods) =
-    Trait (unName iname)
-          (map (\(x, ty) -> (unName x, iTypeToDyType ty)) (M.toList gAttrs))
-          (map (translateConstructor iname) (zip [0..] constructors)
-           ++ map translateMethod (M.elems methods))
+-- Interface translation
+type Trans = ReaderT Spec (Except String)
+
+translateSpec :: Spec -> Either String [Trait]
+translateSpec s@(Spec ifaces _ _ _ _) =
+    runExcept (runReaderT (mapM translateIface (M.elems ifaces)) s)
+
+translateIface :: Interface -> Trans Trait
+translateIface (Interface iname mInherit constructors _attrs gAttrs operations) =
+    case mInherit of
+        Just parent -> do
+            ifaces <- _ifaces <$> ask
+            case M.lookup parent ifaces of
+                Just piface -> do -- TODO: optimization
+                    Trait _ pattrs pmethods <- translateIface piface
+                    return $ Trait (unName iname) (pattrs ++ attrs) (pmethods ++ methods)
+                Nothing -> throwError $ "Invalid inheritance: " ++ show parent
+    where
+        attrs = map (\(x, ty) -> (unName x, iTypeToDyType ty)) (M.toList gAttrs)
+        methods = map (translateConstructor iname) (zip [0..] constructors) ++
+                  map translateMethod (M.elems operations)
 
 translateConstructor :: Name -> (Int, InterfaceConstructor) -> TraitMemberMethod
 translateConstructor iname (idx, InterfaceConstructor{..}) = tmm

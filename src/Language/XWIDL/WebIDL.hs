@@ -9,7 +9,7 @@ import Language.JS.Type
 import Control.Monad.State
 import Control.Monad.Except
 import qualified Data.Map as M
-import Data.Maybe (listToMaybe)
+import Data.Maybe (listToMaybe, fromMaybe)
 import Data.String.Utils
 
 data TransState = TransState {
@@ -38,13 +38,12 @@ transDefsToSpec defs = do
             _typemap = M.empty
         }
         dummyName = Name ""
-        dummyDef = DefInterface (Interface dummyName [] M.empty M.empty M.empty)
+        dummyDef = DefInterface (Interface dummyName Nothing [] M.empty M.empty M.empty)
         distribute (x, DefInterface i) s = s { _ifaces = M.insert x i (_ifaces s) }
         distribute (x, DefDictionary d) s = s { _dicts = M.insert x d (_dicts s) }
         distribute (x, DefException e) s = s { _exceptions = M.insert x e (_exceptions s) }
         distribute (x, DefEnum e) s = s { _enums = M.insert x e (_enums s) }
         distribute (x, DefCallback c) s = s { _cbs = M.insert x c (_cbs s) }
-
 
 transDef :: W.Definition Tag -> Trans ()
 transDef = \case
@@ -67,47 +66,54 @@ transCallback (W.Callback _ i retty args) = do
 
 transIface :: W.Interface Tag -> Trans ()
 transIface (W.Interface _ extAttrs iname mInherit members) =
-    transIface' iname $ do
-        justDoIt mInherit transIfaceInherit
+    transIface' iname (Just $ fmap i2n mInherit) $ do
         mapM_ transExtAttr extAttrs
         mapM_ transIfaceMember members
 
 transPartialIface :: W.Ident -> [W.InterfaceMember Tag] -> Trans ()
-transPartialIface iname members = transIface' iname $ mapM_ transIfaceMember members
+transPartialIface iname members = transIface' iname Nothing $ mapM_ transIfaceMember members
 
-transIface' :: W.Ident -> Trans () -> Trans ()
-transIface' i work = do
+transIface' :: W.Ident -> Maybe (Maybe Name) -> Trans () -> Trans ()
+transIface' i mChangeInherit work = do
     m <- _emitted <$> get
     case M.lookup (i2n i) m of
         Just (DefInterface iface) -> do
-            replaceFocus (DefInterface iface)
+            case mChangeInherit of
+                Just mInherit -> replaceFocus (DefInterface iface { _iInherit = mInherit })
+                Nothing       -> replaceFocus (DefInterface iface)
             work
         Just _ -> throwError $ "Invalid interface name: " ++ show i
         Nothing -> do
-            replaceFocus (DefInterface (Interface (i2n i) [] M.empty M.empty M.empty))
+            replaceFocus (DefInterface (Interface (i2n i)
+                          (fromMaybe Nothing mChangeInherit) [] M.empty M.empty M.empty))
             work
 
 transDict :: W.Dictionary Tag -> Trans ()
 transDict (W.Dictionary _ dname mInherit dmembers) =
-    mapM transDictMember dmembers >>= transDict' dname (justDoIt mInherit transDictInherit)
+    mapM transDictMember dmembers >>= transDict' dname (Just $ fmap i2n mInherit)
 
 transPartialDict :: W.Ident -> [W.DictionaryMember Tag] -> Trans ()
-transPartialDict dname members = mapM transDictMember members >>= transDict' dname (return ())
+transPartialDict dname members = mapM transDictMember members >>= transDict' dname Nothing
 
-transDict' :: W.Ident -> Trans () -> [DictionaryMember] -> Trans ()
-transDict' i work members = do
+transDict' :: W.Ident -> Maybe (Maybe Name) -> [DictionaryMember] -> Trans ()
+transDict' i mmInhereit members = do
     m <- _emitted <$> get
     case M.lookup (i2n i) m of
         Just (DefDictionary dict) ->
-            replaceFocus (DefDictionary (dict { _dmembers = (_dmembers dict) ++ members })) >> work
+            case mmInhereit of
+                Just mInherit -> do
+                    let dict' = dict { _dmembers = (_dmembers dict) ++ members , _dInherit = mInherit }
+                    replaceFocus (DefDictionary dict')
+                Nothing -> do
+                    let dict' = dict { _dmembers = (_dmembers dict) ++ members }
+                    replaceFocus (DefDictionary dict')
         Just _ -> throwError $ "Invalid dictionary name: " ++ show i
         Nothing ->
-            replaceFocus (DefDictionary (Dictionary (i2n i) members)) >> work
+            replaceFocus (DefDictionary (Dictionary (i2n i) (fromMaybe Nothing mmInhereit) members))
 
 transException :: W.Exception Tag -> Trans ()
 transException (W.Exception _ x mInherit members) = do
-    justDoIt mInherit transExceptionInherit
-    replaceFocus (DefException (Exception (i2n x) []))
+    replaceFocus (DefException (Exception (i2n x) (fmap i2n mInherit) []))
     mapM_ transExceptionMember members
 
 transEnum :: W.Enum Tag -> Trans ()
@@ -149,15 +155,6 @@ transIfaceOp (W.Operation tag _extAttrs _mQualifier ret (Just f) args) = do
     ret' <- transRet ret
     emitOp $ Operation (i2n f) args' ret' mEns mReq
 transIfaceOp _ = error "Special operations are not supported yet"
-
-transIfaceInherit :: W.Ident -> Trans ()
-transIfaceInherit _ = return () -- TODO
-
-transDictInherit :: W.Ident -> Trans ()
-transDictInherit _ = return () -- TODO
-
-transExceptionInherit :: W.Ident -> Trans ()
-transExceptionInherit _ = return () -- TODO
 
 transDictMember :: W.DictionaryMember Tag -> Trans DictionaryMember
 transDictMember (W.DictionaryMember _ ty i mDef) = do
@@ -301,11 +298,7 @@ replaceFocus def = do
 
 nameOf :: Definition -> Name
 nameOf (DefInterface i) = _iName i
-nameOf (DefDictionary (Dictionary name _)) = name
-nameOf (DefException (Exception name _)) = name
+nameOf (DefDictionary (Dictionary name _ _)) = name
+nameOf (DefException (Exception name _ _)) = name
 nameOf (DefEnum (Enum name _)) = name
 nameOf (DefCallback (Callback name _ _)) = name
-
-justDoIt :: Monad m => Maybe t -> (t -> m ()) -> m ()
-justDoIt (Just a) f = f a
-justDoIt Nothing _ = return ()

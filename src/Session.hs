@@ -63,21 +63,23 @@ initState spec handler snum traits = SessionState {
 type Session = StateT SessionState IO
 
 run :: Spec -> IO ()
-run spec = do
-    let traits = translateSpec spec
-    putStrLn "// ------ traits ------- "
-    mapM_ (print . pretty) traits
-    counter <- newCounter 0
-    hSetBuffering stdout NoBuffering
-    putStrLn "Engine launched, waiting for connection"
-    serve (Host "localhost") "8888" $ \(sock, addr) -> do
-        snum <- incrCounter 1 counter
-        putStrLn $ "Creating session #" ++ show snum
-        putStrLn $ "TCP connection established from " ++ show addr
-        handler <- socketToHandle sock ReadWriteMode
-        hSetBuffering handler NoBuffering
-        evalStateT loop (initState spec handler snum traits)
-        putStrLn $ "Ending session #" ++ show snum
+run spec =
+    case translateSpec spec of
+        Left e -> putStrLn $ "Translation of spec failed: " ++ e
+        Right traits -> do
+            putStrLn "// ------ traits ------- "
+            mapM_ (print . pretty) traits
+            counter <- newCounter 0
+            hSetBuffering stdout NoBuffering
+            putStrLn "Engine launched, waiting for connection"
+            serve (Host "localhost") "8888" $ \(sock, addr) -> do
+                snum <- incrCounter 1 counter
+                putStrLn $ "Creating session #" ++ show snum
+                putStrLn $ "TCP connection established from " ++ show addr
+                handler <- socketToHandle sock ReadWriteMode
+                hSetBuffering handler NoBuffering
+                evalStateT loop (initState spec handler snum traits)
+                putStrLn $ "Ending session #" ++ show snum
 
 -- Emit code inside named top-level method target
 withTarget :: String -> Session a -> Session (TopLevelMethod, a)
