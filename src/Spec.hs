@@ -10,13 +10,15 @@ data Spec = Spec {
     _ifaces     :: M.Map Name Interface,
     _dicts      :: M.Map Name Dictionary,
     _exceptions :: M.Map Name Exception,
-    _enums      :: M.Map Name Enum
+    _enums      :: M.Map Name Enum,
+    _cbs        :: M.Map Name Callback
 }
 
 data Definition = DefInterface Interface
                 | DefDictionary Dictionary
                 | DefException Exception
                 | DefEnum Enum
+                | DefCallback Callback
                 deriving Show
 
 {-
@@ -43,6 +45,8 @@ data Dictionary = Dictionary {
   _dname :: Name,
   _dmembers :: [DictionaryMember]
 } deriving Show
+
+data Callback = Callback Name (Maybe Type) [Argument] deriving Show
 
 data DictionaryMember = DictionaryMember Type Name (Maybe W.Default) deriving Show
 

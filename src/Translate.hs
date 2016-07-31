@@ -10,7 +10,7 @@ import JS.Type
 import qualified Data.Map as M
 
 translateSpec :: Spec -> [Trait]
-translateSpec (Spec ifaces _ _ _) = map translateIface (M.elems ifaces)
+translateSpec (Spec ifaces _ _ _ _) = map translateIface (M.elems ifaces)
 
 translateIface :: Interface -> Trait
 translateIface (Interface iname constructors _attrs gAttrs methods) =

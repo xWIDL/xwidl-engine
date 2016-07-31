@@ -30,7 +30,7 @@ transDefsToSpec defs = do
                 )
     let defsMap = M.delete dummyName (_emitted s)
     -- ((a0 -> b0 -> b0) -> b0 -> t0 a0 -> b0))
-    return (foldr distribute (Spec M.empty M.empty M.empty M.empty) (M.toList defsMap))
+    return (foldr distribute (Spec M.empty M.empty M.empty M.empty M.empty) (M.toList defsMap))
     where
         initState = TransState {
             _emitted = M.empty,
@@ -43,6 +43,7 @@ transDefsToSpec defs = do
         distribute (x, DefDictionary d) s = s { _dicts = M.insert x d (_dicts s) }
         distribute (x, DefException e) s = s { _exceptions = M.insert x e (_exceptions s) }
         distribute (x, DefEnum e) s = s { _enums = M.insert x e (_enums s) }
+        distribute (x, DefCallback c) s = s { _cbs = M.insert x c (_cbs s) }
 
 
 transDef :: W.Definition Tag -> Trans ()
@@ -56,6 +57,13 @@ transDef = \case
     W.DefEnum e -> transEnum e
     W.DefTypedef def -> transTypeDef def
     W.DefImplementsStatement _ -> throwError "`implements` is not supported yet"
+    W.DefCallback c -> transCallback c
+
+transCallback :: W.Callback Tag -> Trans ()
+transCallback (W.Callback _ i retty args) = do
+    retty' <- transRet retty
+    args' <- mapM transArg args
+    replaceFocus $ DefCallback (Callback (i2n i) retty' args')
 
 transIface :: W.Interface Tag -> Trans ()
 transIface (W.Interface _ extAttrs iname mInherit members) =
@@ -140,6 +148,7 @@ transIfaceOp (W.Operation tag _extAttrs _mQualifier ret (Just f) args) = do
     args' <- mapM transArg args
     ret' <- transRet ret
     emitOp $ Operation (i2n f) args' ret' mEns mReq
+transIfaceOp _ = error "Special operations are not supported yet"
 
 transIfaceInherit :: W.Ident -> Trans ()
 transIfaceInherit _ = return () -- TODO
@@ -227,6 +236,7 @@ transArg = \case
     W.ArgNonOpt _extAttrs ty _mEllipsis (W.ArgIdent x) -> do
         ty' <- transType ty
         return $ Argument (i2n x) ty' Nothing
+    W.ArgNonOpt _extAttrs _ty _mEllipsis _ -> error "ArgKey is not supported yet"
 
 inspectAttrComment :: [String] -> Trans ()
 inspectAttrComment = mapM_ collectGhostAttr .
@@ -294,6 +304,7 @@ nameOf (DefInterface i) = _iName i
 nameOf (DefDictionary (Dictionary name _)) = name
 nameOf (DefException (Exception name _)) = name
 nameOf (DefEnum (Enum name _)) = name
+nameOf (DefCallback (Callback name _ _)) = name
 
 justDoIt (Just a) f = f a
 justDoIt Nothing _ = return ()
