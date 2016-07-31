@@ -1,7 +1,8 @@
 -- xWIDL specification AST
-module Spec where
+module Language.XWIDL.Spec where
 
-import JS.Type
+import Language.JS.Type
+
 import qualified Data.Map as M
 import qualified Language.WebIDL.AST as W
 import Prelude hiding (Enum)

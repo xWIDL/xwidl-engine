@@ -1,27 +1,36 @@
 module Session (run) where
 
-import Translate
-import Spec
-import Dafny
-import JS.Type
-import JS.Platform
+import Language.Dafny.Translate
+import Language.Dafny.AST
+import Language.Dafny.Request
+import Language.Dafny.Analyze
+
+import Language.XWIDL.Spec
+
+import Language.JS.Type
+import Language.JS.Platform
+
 import Model
+
 import Control.Monad.State
+import Control.Monad (forM_)
+
+import qualified Data.Map as M
 import Data.Maybe (fromJust)
 import Data.Char (toLower)
-import qualified Data.Map as M
-import Control.Monad (forM_)
 import Data.Atomics.Counter
-import Network.Simple.TCP
-import Text.PrettyPrint.Leijen (pretty)
-import Network.Socket (socketToHandle)
-import System.IO
 import Data.Aeson
+
 import qualified Data.ByteString.Lazy as BSL
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC
-import Dafny.Request
-import Dafny.Analyze
+
+import Text.PrettyPrint.Leijen (pretty)
+
+import Network.Simple.TCP
+import Network.Socket (socketToHandle)
+
+import System.IO
 
 data SessionState = SessionState {
     -- Abstract heap

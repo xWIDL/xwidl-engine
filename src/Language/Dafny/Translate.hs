@@ -1,11 +1,11 @@
 -- Translation from xIWDL spec to Dafny traits
 {-# LANGUAGE TupleSections #-}
 
-module Translate where
+module Language.Dafny.Translate where
 
-import Spec
-import Dafny
-import JS.Type
+import Language.XWIDL.Spec
+import Language.Dafny.AST
+import Language.JS.Type
 
 import qualified Data.Map as M
 

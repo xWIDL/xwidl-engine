@@ -1,10 +1,10 @@
 -- Translate WebIDL into xWIDL
-module WebIDL (transDefsToSpec) where
+module Language.XWIDL.WebIDL (transDefsToSpec) where
 
 import qualified Language.WebIDL.AST as W
-import Spec
+import Language.XWIDL.Spec
 import Language.WebIDL.Parser
-import JS.Type
+import Language.JS.Type
 
 import Control.Monad.State
 import Control.Monad.Except
@@ -236,7 +236,7 @@ transArg = \case
     W.ArgNonOpt _extAttrs ty _mEllipsis (W.ArgIdent x) -> do
         ty' <- transType ty
         return $ Argument (i2n x) ty' Nothing
-    W.ArgNonOpt _extAttrs _ty _mEllipsis _ -> error "ArgKey is not supported yet"
+    _ -> error "ArgKey is not supported yet"
 
 inspectAttrComment :: [String] -> Trans ()
 inspectAttrComment = mapM_ collectGhostAttr .
@@ -306,5 +306,6 @@ nameOf (DefException (Exception name _)) = name
 nameOf (DefEnum (Enum name _)) = name
 nameOf (DefCallback (Callback name _ _)) = name
 
+justDoIt :: Monad m => Maybe t -> (t -> m ()) -> m ()
 justDoIt (Just a) f = f a
 justDoIt Nothing _ = return ()

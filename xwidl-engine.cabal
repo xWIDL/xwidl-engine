@@ -11,12 +11,12 @@ build-type:          Simple
 cabal-version:       >=1.10
 
 library
-  exposed-modules:     Model,
-                       Dafny,
-                       Session,
-                       Spec,
-                       Translate,
-                       WebIDL
+  exposed-modules:     Model
+                       Session
+                       Language.Dafny.AST
+                       Language.Dafny.Translate
+                       Language.XWIDL.Spec
+                       Language.XWIDL.WebIDL
   default-extensions:  RecordWildCards, LambdaCase, FlexibleContexts
   -- other-modules:       
   -- other-extensions:    

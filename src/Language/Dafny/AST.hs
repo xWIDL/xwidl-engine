@@ -1,9 +1,9 @@
 -- Dafny AST and printer
-module Dafny where
+module Language.Dafny.AST where
 
 import Text.PrettyPrint.Leijen
-import JS.Type
-import JS.Platform (RelBiOp(..))
+import Language.JS.Type
+import Language.JS.Platform (RelBiOp(..))
 
 import qualified Data.Map as M
 

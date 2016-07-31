@@ -1,12 +1,13 @@
 import Session
-import Spec
+import Translate
 
-import qualified Data.Map as M
 import JS.Type
-import WebIDL
+
+import Language.XWIDL.Spec
+import Language.XWIDL.WebIDL
+
 import Language.WebIDL.Parser
 import qualified Language.WebIDL.AST as W
-import Translate
 
 import qualified Data.Map as M
 

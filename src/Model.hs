@@ -2,7 +2,7 @@
 module Model where
 
 import qualified Data.Map as M
-import JS.Type
+import Language.JS.Type
 
 -- Platform objects
 data JsObj = JsObj {
