@@ -337,7 +337,7 @@ lookupBinding r = do
 
 lookupOperation :: Name -> Name -> Session Operation
 lookupOperation i f = do
-    ifaces <- filterIface . _spec <$> get
+    ifaces <- _ifaces . _spec <$> get
     case M.lookup i ifaces of
         Just iface -> case M.lookup f (_operations iface) of
             Just method -> return method
@@ -346,7 +346,7 @@ lookupOperation i f = do
 
 lookupAttr :: Name -> Name -> Session (Maybe    Type)
 lookupAttr i a = do
-    ifaces <- filterIface . _spec <$> get
+    ifaces <- _ifaces . _spec <$> get
     case M.lookup i ifaces of
         Just iface -> return $ M.lookup a (_ghostAttrs iface)
         Nothing    -> error $ "Invalid Interface name: " ++ show i
@@ -361,7 +361,7 @@ iTypeToJsType = \case
 
 findCons :: Name -> [JsType] -> Session String
 findCons iname argTypes = do
-    ifaces <- filterIface . _spec <$> get
+    ifaces <- _ifaces . _spec <$> get
     case M.lookup iname ifaces of
         Just iface -> do
             let consTypes = zip [(0 :: Int)..] (map _icArgs (_constructors iface))
@@ -381,9 +381,3 @@ typeEquiv :: JsType -> JsType -> Bool
 typeEquiv (JTyPrim PTyNull) (JTyObj _) = True
 typeEquiv (JTyObj _) (JTyPrim PTyNull) = True
 typeEquiv t1 t2 = t1 == t2
-
-filterIface :: Spec -> M.Map Name Interface
-filterIface (Spec m) = foldr f M.empty (M.toList m)
-    where
-        f (x, DefInterface i) im = M.insert x i im
-        f _ im = im

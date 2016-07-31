@@ -10,9 +10,7 @@ import JS.Type
 import qualified Data.Map as M
 
 translateSpec :: Spec -> [Trait]
-translateSpec (Spec ifaces) = flip map (M.elems ifaces) $ \case
-    DefInterface i -> translateIface i
-    other -> error $ "can't translate " ++ show other
+translateSpec (Spec ifaces _ _ _) = map translateIface (M.elems ifaces)
 
 translateIface :: Interface -> Trait
 translateIface (Interface iname constructors _attrs gAttrs methods) =

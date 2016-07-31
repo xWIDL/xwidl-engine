@@ -7,8 +7,17 @@ import qualified Language.WebIDL.AST as W
 import Prelude hiding (Enum)
 
 data Spec = Spec {
-    _defs :: M.Map Name Definition
+    _ifaces     :: M.Map Name Interface,
+    _dicts      :: M.Map Name Dictionary,
+    _exceptions :: M.Map Name Exception,
+    _enums      :: M.Map Name Enum
 }
+
+data Definition = DefInterface Interface
+                | DefDictionary Dictionary
+                | DefException Exception
+                | DefEnum Enum
+                deriving Show
 
 {-
     We will mimick Language.WebIDL.AST's naming, but
@@ -22,12 +31,6 @@ data Spec = Spec {
     - Rewrite/Simplify the type structure
 -}
 
-data Definition = DefInterface Interface
-                | DefDictionary Dictionary
-                | DefException Exception
-                | DefEnum Enum
-                deriving Show
-
 data Interface = Interface {
     _iName :: Name,
     _constructors :: [InterfaceConstructor],
@@ -36,7 +39,10 @@ data Interface = Interface {
     _operations :: M.Map Name Operation
 } deriving Show
 
-data Dictionary = Dictionary Name [DictionaryMember] deriving Show
+data Dictionary = Dictionary {
+  _dname :: Name,
+  _dmembers :: [DictionaryMember]
+} deriving Show
 
 data DictionaryMember = DictionaryMember Type Name (Maybe W.Default) deriving Show
 

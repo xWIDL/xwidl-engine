@@ -13,9 +13,8 @@ import qualified Data.Map as M
 main = do
     result <- parseIDL <$> readFile "examples/ex-1/spec.idl"
     case result of
-        Right defs -> do
-            let ifaces = map (\(W.DefInterface i) -> i) defs -- FIXME
-            case transIfaces ifaces of
-                Right mDefs -> run (Spec mDefs)
+        Right defs ->
+            case transDefsToSpec defs of
+                Right spec -> run spec
                 Left err -> putStrLn err
         Left err -> print err

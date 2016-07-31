@@ -1,5 +1,5 @@
 -- Translate WebIDL into xWIDL
-module WebIDL (transIfaces) where
+module WebIDL (transDefsToSpec) where
 
 import qualified Language.WebIDL.AST as W
 import Spec
@@ -14,32 +14,101 @@ import Data.String.Utils
 
 data TransState = TransState {
     _emitted :: M.Map Name Definition,
-    _focus   :: Definition
+    _focus   :: Definition,
+    _typemap :: M.Map Name Type
 }
 
 -- Interface translation
 type Trans = StateT TransState (Except String)
 
--- Should be compatible with all kinds of definitions in future
-transIfaces :: [W.Interface Tag] -> Either String (M.Map Name Definition)
-transIfaces ifaces = M.delete dummyName . _emitted <$> runExcept (execStateT m initState)
+
+transDefsToSpec :: [W.Definition Tag] -> Either String Spec
+transDefsToSpec defs = do
+    s <- runExcept (flip execStateT initState $ do
+                mapM_ transDef defs
+                replaceFocus dummyDef
+                )
+    let defsMap = M.delete dummyName (_emitted s)
+    -- ((a0 -> b0 -> b0) -> b0 -> t0 a0 -> b0))
+    return (foldr distribute (Spec M.empty M.empty M.empty M.empty) (M.toList defsMap))
     where
         initState = TransState {
             _emitted = M.empty,
-            _focus   = dummyIface
+            _focus   = dummyDef,
+            _typemap = M.empty
         }
         dummyName = Name ""
-        m = mapM_ transIface' ifaces >> replaceFocus dummyIface
-        dummyIface = DefInterface (Interface dummyName [] M.empty M.empty M.empty)
+        dummyDef = DefInterface (Interface dummyName [] M.empty M.empty M.empty)
+        distribute (x, DefInterface i) s = s { _ifaces = M.insert x i (_ifaces s) }
+        distribute (x, DefDictionary d) s = s { _dicts = M.insert x d (_dicts s) }
+        distribute (x, DefException e) s = s { _exceptions = M.insert x e (_exceptions s) }
+        distribute (x, DefEnum e) s = s { _enums = M.insert x e (_enums s) }
 
-transIface' :: W.Interface Tag -> Trans ()
-transIface' (W.Interface _ extAttrs iname mInherit members) = do
-    replaceFocus (DefInterface (Interface (i2n iname) [] M.empty M.empty M.empty))
-    case mInherit of
-        Just pid -> transIfaceInherit pid
-        Nothing  -> return ()
-    mapM_ transExtAttr extAttrs
-    mapM_ transIfaceMember members
+
+transDef :: W.Definition Tag -> Trans ()
+transDef = \case
+    W.DefInterface i -> transIface i
+    W.DefPartial p -> case p of
+        W.PartialInterface _ x members -> transPartialIface x members
+        W.PartialDictionary _ x members -> transPartialDict x members
+    W.DefDictionary dict -> transDict dict
+    W.DefException e -> transException e
+    W.DefEnum e -> transEnum e
+    W.DefTypedef def -> transTypeDef def
+    W.DefImplementsStatement _ -> throwError "`implements` is not supported yet"
+
+transIface :: W.Interface Tag -> Trans ()
+transIface (W.Interface _ extAttrs iname mInherit members) =
+    transIface' iname $ do
+        justDoIt mInherit transIfaceInherit
+        mapM_ transExtAttr extAttrs
+        mapM_ transIfaceMember members
+
+transPartialIface :: W.Ident -> [W.InterfaceMember Tag] -> Trans ()
+transPartialIface iname members = transIface' iname $ mapM_ transIfaceMember members
+
+transIface' :: W.Ident -> Trans () -> Trans ()
+transIface' i work = do
+    m <- _emitted <$> get
+    case M.lookup (i2n i) m of
+        Just (DefInterface iface) -> do
+            replaceFocus (DefInterface iface)
+            work
+        Just _ -> throwError $ "Invalid interface name: " ++ show i
+        Nothing -> do
+            replaceFocus (DefInterface (Interface (i2n i) [] M.empty M.empty M.empty))
+            work
+
+transDict :: W.Dictionary Tag -> Trans ()
+transDict (W.Dictionary _ dname mInherit dmembers) =
+    mapM transDictMember dmembers >>= transDict' dname (justDoIt mInherit transDictInherit)
+
+transPartialDict :: W.Ident -> [W.DictionaryMember Tag] -> Trans ()
+transPartialDict dname members = mapM transDictMember members >>= transDict' dname (return ())
+
+transDict' :: W.Ident -> Trans () -> [DictionaryMember] -> Trans ()
+transDict' i work members = do
+    m <- _emitted <$> get
+    case M.lookup (i2n i) m of
+        Just (DefDictionary dict) ->
+            replaceFocus (DefDictionary (dict { _dmembers = (_dmembers dict) ++ members })) >> work
+        Just _ -> throwError $ "Invalid dictionary name: " ++ show i
+        Nothing ->
+            replaceFocus (DefDictionary (Dictionary (i2n i) members)) >> work
+
+transException :: W.Exception Tag -> Trans ()
+transException (W.Exception _ x mInherit members) = do
+    justDoIt mInherit transExceptionInherit
+    replaceFocus (DefException (Exception (i2n x) []))
+    mapM_ transExceptionMember members
+
+transEnum :: W.Enum Tag -> Trans ()
+transEnum (W.Enum _ i evals) = replaceFocus (DefEnum (Enum (i2n i) (map (\(W.EnumValue s) -> s) evals)))
+
+transTypeDef :: W.Typedef Tag -> Trans ()
+transTypeDef (W.Typedef _ ty i) = do
+    ty' <- transType ty
+    modify (\s -> s { _typemap = M.insert (i2n i) ty' (_typemap s) })
 
 transExtAttr :: W.ExtendedAttribute Tag -> Trans ()
 transExtAttr = \case
@@ -75,6 +144,24 @@ transIfaceOp (W.Operation tag _extAttrs _mQualifier ret (Just f) args) = do
 transIfaceInherit :: W.Ident -> Trans ()
 transIfaceInherit _ = return () -- TODO
 
+transDictInherit :: W.Ident -> Trans ()
+transDictInherit _ = return () -- TODO
+
+transExceptionInherit :: W.Ident -> Trans ()
+transExceptionInherit _ = return () -- TODO
+
+transDictMember :: W.DictionaryMember Tag -> Trans DictionaryMember
+transDictMember (W.DictionaryMember _ ty i mDef) = do
+    ty' <- transType ty
+    return (DictionaryMember ty' (i2n i) mDef)
+
+transExceptionMember :: W.ExceptionMember Tag -> Trans ExceptionMember
+transExceptionMember = \case
+    W.ExConst _ _ -> error "Const is not supported yet" -- TODO
+    W.ExField _ ty i -> do
+        ty' <- transType ty
+        return (ExField ty' (i2n i))
+
 transRet :: W.ReturnType -> Trans (Maybe Type)
 transRet = \case
     W.RetType ty -> Just <$> transType ty
@@ -96,7 +183,12 @@ transNonAnyType :: W.NonAnyType -> Trans Type
 transNonAnyType = \case
     W.TyPrim primTy suffix -> applyTySuffix suffix <$> transPrimType primTy
     W.TyDOMString suffix -> return (applyTySuffix suffix TyDOMString)
-    W.TyIdent i suffix -> return (applyTySuffix suffix (TyInterface (i2n i)))
+    W.TyIdent i suffix -> do
+        let name = i2n i
+        tymap <- _typemap <$> get
+        case M.lookup name tymap of
+            Just ty -> return ty
+            Nothing -> return $ applyTySuffix suffix (TyInterface name)
     W.TySequence ty mNull -> do
         ty' <- transType ty
         case mNull of
@@ -202,3 +294,6 @@ nameOf (DefInterface i) = _iName i
 nameOf (DefDictionary (Dictionary name _)) = name
 nameOf (DefException (Exception name _)) = name
 nameOf (DefEnum (Enum name _)) = name
+
+justDoIt (Just a) f = f a
+justDoIt Nothing _ = return ()
