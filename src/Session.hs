@@ -11,6 +11,7 @@ import Data.Maybe (fromJust)
 import Data.Char (toLower)
 import qualified Data.Map as M
 import Control.Monad (forM_)
+import Data.Atomics.Counter
 import Network.Simple.TCP
 import Text.PrettyPrint.Leijen (pretty)
 import Network.Socket (socketToHandle)
@@ -31,33 +32,43 @@ data SessionState = SessionState {
     _target :: String,
     -- Original spec
     _spec :: Spec,
-
-    _handler :: Handle
+    -- Socket handle
+    _handler :: Handle,
+    -- Session number
+    _snum :: Int,
+    -- Traits text
+    _traits :: [Trait]
 }
 
-initState :: Spec -> Handle -> SessionState
-initState spec handler = SessionState {
+initState :: Spec -> Handle -> Int -> [Trait] -> SessionState
+initState spec handler snum traits = SessionState {
     _heap = initHeap,
     _tlms = M.empty,
     _target = "",
     _spec = spec,
-    _handler = handler
+    _handler = handler,
+    _snum = snum,
+    _traits = traits
 }
 
 type Session = StateT SessionState IO
 
 run :: Spec -> IO ()
 run spec = do
+    let traits = translateSpec spec
+    putStrLn "// ------ traits ------- "
+    mapM_ (print . pretty) traits
+    counter <- newCounter 0
     hSetBuffering stdout NoBuffering
     putStrLn "Engine launched, waiting for connection"
     serve (Host "localhost") "8888" $ \(sock, addr) -> do
+        snum <- incrCounter 1 counter
+        putStrLn $ "Creating session #" ++ show snum
         putStrLn $ "TCP connection established from " ++ show addr
         handler <- socketToHandle sock ReadWriteMode
         hSetBuffering handler NoBuffering
-        let traits = translateSpec spec
-        putStrLn "// ------ traits ------- "
-        mapM_ (print . pretty) traits
-        evalStateT loop (initState spec handler)
+        evalStateT loop (initState spec handler snum traits)
+        putStrLn $ "Ending session #" ++ show snum
 
 -- Emit code inside named top-level method target
 withTarget :: String -> Session a -> Session (TopLevelMethod, a)
@@ -89,11 +100,10 @@ loop = do
                     liftIO $ putStrLn ("// [REQ] " ++ show cmd)
                     dispatch cmd
                 Nothing  -> do
-                    liftIO $ putStrLn "Invalid request"
+                    liftIO $ putStrLn $ "Invalid request: " ++ show line
                     return Nothing
     case mReply of
-        Nothing -> do
-            return ()
+        Nothing -> return ()
         Just reply -> do
             liftIO $ BS.hPut handler (BSL.toStrict (encode reply) `BC.snoc` '\n')
             loop
@@ -133,7 +143,17 @@ handleInvoke lvar x args = do
         v <- compileLVar lvar
         args' <- mapM compileExpr args
         addStmt (SInvoke v (unName x) args')
-    getSat tlm Nothing
+    reportToReply <$> getSat tlm
+
+reportToReply :: Report -> Reply
+reportToReply = \case
+    Verified -> Sat Nothing
+    Failed   -> Unsat
+
+reportToBool :: Report -> Bool
+reportToBool = \case
+    Verified -> True
+    Failed   -> False
 
 handleEval :: JsExpr -> Maybe [JsExpr] -> Session Reply
 handleEval e mDomains = do
@@ -145,13 +165,14 @@ handleEval e mDomains = do
 
 handlePrimEval :: JsExpr -> [JsExpr] -> Session Reply
 handlePrimEval e domains = do
-    (tlm, _) <- withTarget "Main" $ do
-        de <- compileExpr e
-        addStmt (SVarAssign "prim_val" de)
-        forM_ domains $ \dom -> do
+    replies <- forM domains $ \dom -> do
+        (tlm, _) <- withTarget "Main" $ do
+            de <- compileExpr e
+            addStmt (SVarAssign "prim_val" de)
             dome <- compileExpr dom
             addStmt (SAssert dome)
-    getSat tlm Nothing
+        getSat tlm
+    return (Replies $ map reportToBool replies)
 
 handleObjEval :: JsExpr -> Session Reply
 handleObjEval e = do
@@ -159,15 +180,19 @@ handleObjEval e = do
         e' <- compileExpr e
         JVRef r <- interpretExpr e' e
         return r
-    getSat tlm (Just r)
+    report <- getSat tlm
+    case report of
+        Verified -> return (Sat (Just r))
+        Failed -> return Unsat
 
-getSat :: TopLevelMethod -> Maybe JRef -> Session Reply
-getSat tlm mRef = do
-    let src = show (pretty tlm)
+getSat :: TopLevelMethod -> Session Report
+getSat tlm = do
+    traits <- _traits <$> get
+    let src = unlines (map (show . pretty) traits) ++ "\n" ++ show (pretty tlm)
+    liftIO $ putStrLn ("Getting sat from REST...tlm: " ++ src)
     ans <- liftIO $ askDafny REST src
     case ans of
-        Right Verified -> return (Sat mRef)
-        Right Failed -> return Unsat
+        Right ret -> return ret
         Left err -> error $ "Dafny connection error: " ++ err
 
 compileLVar :: LVar -> Session String
@@ -182,7 +207,7 @@ handleAssert e = do
     (tlm, _) <- withTarget "Main" $ do
         e' <- compileExpr e
         addStmt (SAssert e')
-    getSat tlm Nothing
+    reportToReply <$> getSat tlm
 
 {-
     JVal  -> DyVal
