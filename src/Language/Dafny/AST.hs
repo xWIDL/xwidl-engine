@@ -42,7 +42,7 @@ data DyExpr = DVal DyVal
             | DRel RelBiOp DyExpr DyExpr
             deriving (Show)
 
-data Stmt = SVarDecl String String -- var x : <class>;
+data Stmt = SVarDecl String DyType -- var x : <type>;
           | SVarDef String DyExpr -- var x := <expr>;
           | SVarAssign String DyExpr -- x := <expr>;
           | SInvoke String String [DyExpr] -- x.f([<expr>]);
@@ -52,6 +52,8 @@ data Stmt = SVarDecl String String -- var x : <class>;
 data DyType = DTyClass String
             | DTyString
             | DTyInt
+            | DTyBool
+            | DTyReal
             deriving (Show)
 
 -- Pretty print
@@ -88,6 +90,8 @@ instance Pretty DyType where
     pretty (DTyClass x) = text x
     pretty DTyString = text "string"
     pretty DTyInt = text "int"
+    pretty DTyBool = text "bool"
+    pretty DTyReal = text "real"
 
 instance Pretty DyExpr where
     pretty (DVal v) = pretty v
@@ -108,7 +112,7 @@ instance Pretty RelBiOp where
 
 instance Pretty Stmt where
     pretty (SVarDef x e) = text "var" <+> text x <+> text ":=" <+> pretty e
-    pretty (SVarDecl x cls) = text "var" <+> text x <+> text ":" <+> text cls
+    pretty (SVarDecl x cls) = text "var" <+> text x <+> text ":" <+> pretty cls
     pretty (SVarAssign x e) = text x <+> text ":=" <+> pretty e
     pretty (SInvoke x f args) = text x <> text "." <> text f <>
                                 parens (hcat (punctuate (comma <> space) (map pretty args)))

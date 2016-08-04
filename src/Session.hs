@@ -46,18 +46,11 @@ data SessionState = SessionState {
     -- Session number
     _snum :: Int,
     -- Traits text
-    _traits :: [Trait]
-}
-
-initState :: Spec -> Handle -> Int -> [Trait] -> SessionState
-initState spec handler snum traits = SessionState {
-    _heap = initHeap,
-    _tlms = M.empty,
-    _target = "",
-    _spec = spec,
-    _handler = handler,
-    _snum = snum,
-    _traits = traits
+    _traits :: [Trait],
+    -- Primitive type domains
+    _pDomains :: M.Map PrimType [JAssert],
+    -- unique namer
+    _namer :: Namer
 }
 
 type Session = StateT SessionState IO
@@ -78,7 +71,18 @@ run spec =
                 putStrLn $ "TCP connection established from " ++ show addr
                 handler <- socketToHandle sock ReadWriteMode
                 hSetBuffering handler NoBuffering
-                evalStateT loop (initState spec handler snum traits)
+                Just (Domains m) <- eGetLine handler
+                evalStateT loop (SessionState {
+                    _heap = initHeap,
+                    _tlms = M.empty,
+                    _target = "",
+                    _spec = spec,
+                    _handler = handler,
+                    _snum = snum,
+                    _traits = traits,
+                    _pDomains = M.fromList m,
+                    _namer = initNamer
+                })
                 putStrLn $ "Ending session #" ++ show snum
 
 -- Emit code inside named top-level method target
@@ -122,7 +126,7 @@ loop = do
 dispatch :: Command -> Session (Maybe Reply)
 dispatch = \case
     CInvoke lvar x args -> Just <$> handleInvoke lvar x args
-    CEval e mDomains -> Just <$> handleEval e mDomains
+    CEval e -> Just <$> handleEval e
     CAssert e -> Just <$> handleAssert e
     CEnd -> return Nothing
 {-
@@ -166,24 +170,23 @@ reportToBool = \case
     Verified -> True
     Failed   -> False
 
-handleEval :: JsExpr -> Maybe [JsExpr] -> Session Reply
-handleEval e mDomains = do
-    ty <- inferType e
-    case (ty, mDomains) of
-        (JTyPrim _, Just domains) -> handlePrimEval e domains
-        (JTyObj _, Nothing) -> handleObjEval e
-        _ -> error "Invalid eval"
+handleEval :: JsExpr -> Session Reply
+handleEval e = inferType e >>= \case
+    JTyPrim pty -> handlePrimEval pty e
+    JTyObj _    -> handleObjEval e
+    _           -> error "Invalid eval"
 
-handlePrimEval :: JsExpr -> [JsExpr] -> Session Reply
-handlePrimEval e domains = do
-    replies <- forM domains $ \dom -> do
+handlePrimEval :: PrimType -> JsExpr -> Session Reply
+handlePrimEval pty e = do
+    domainMap <- _pDomains <$> get
+    let Just domains = M.lookup pty domainMap
+    replies <- forM domains $ \assert -> do
         (tlm, _) <- withTarget "Main" $ do
             de <- compileExpr e
             addStmt (SVarAssign "prim_val" de)
-            dome <- compileExpr dom
-            addStmt (SAssert dome)
+            compileAssert pty assert
         getSat tlm
-    return (Replies $ map reportToBool replies)
+    return (Replies pty $ map reportToBool replies)
 
 handleObjEval :: JsExpr -> Session Reply
 handleObjEval e = do
@@ -195,6 +198,14 @@ handleObjEval e = do
     case report of
         Verified -> return (Sat (Just r))
         Failed -> return Unsat
+
+compileAssert :: PrimType -> JAssert -> Session ()
+compileAssert pty (JAssert (Name x) e) = do
+    prefix <- fresh
+    let vname = prefix ++ x
+    addStmt (SVarDecl vname (ptyToDyType pty))
+    e' <- compileExpr e
+    addStmt (SAssert e')
 
 getSat :: TopLevelMethod -> Session Report
 getSat tlm = do
@@ -267,6 +278,7 @@ inferType = \case
 
 compileExpr :: JsExpr -> Session DyExpr
 compileExpr (JVal v) = DVal <$> compileJsVal v
+compileExpr (JInterface i) = DVal . DVar <$> compileLVar (LInterface i)
 compileExpr (JCall lvar (Name f) es) = do
     x <- compileLVar lvar
     DCall x f <$> mapM compileExpr es
@@ -355,7 +367,7 @@ lookupOperation i f = do
             Nothing -> error $ "Invalid method name: " ++ show f
         Nothing -> error $ "Invalid Interface name: " ++ show i
 
-lookupAttr :: Name -> Name -> Session (Maybe    Type)
+lookupAttr :: Name -> Name -> Session (Maybe Type)
 lookupAttr i a = do
     ifaces <- _ifaces . _spec <$> get
     case M.lookup i ifaces of
@@ -392,3 +404,29 @@ typeEquiv :: JsType -> JsType -> Bool
 typeEquiv (JTyPrim PTyNull) (JTyObj _) = True
 typeEquiv (JTyObj _) (JTyPrim PTyNull) = True
 typeEquiv t1 t2 = t1 == t2
+
+fresh :: Session String
+fresh = do
+    namer <- _namer <$> get
+    let (x, namer') = freshName namer
+    modify (\s -> s { _namer = namer' })
+    return x
+
+ptyToDyType :: PrimType -> DyType
+ptyToDyType = \case
+    PTyInt       -> DTyInt
+    PTyDouble    -> DTyReal
+    PTyString    -> DTyString
+    PTyBool      -> DTyBool
+    other        -> error $ "can't translate " ++ show other ++ " to DyType"
+    -- XXX: for null, we can initialize an empty Object class
+
+-- Namer
+
+data Namer = Namer Int
+
+initNamer :: Namer
+initNamer = Namer 0
+
+freshName :: Namer -> (String, Namer)
+freshName (Namer x) = ("fresh_" ++ show x, Namer (x + 1))
