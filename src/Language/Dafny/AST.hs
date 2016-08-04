@@ -107,8 +107,14 @@ instance Pretty DyVal where
 
 
 instance Pretty RelBiOp where
-    pretty NotEqual = text "!="
-    pretty Equal    = text "=="
+    pretty = \case
+        NotEqual -> text "!="
+        Equal -> text "=="
+        And -> text "&&"
+        LessThan -> text "<"
+        LessEq -> text "<="
+        GreaterThan -> text ">"
+        GreaterEq -> text ">="
 
 instance Pretty Stmt where
     pretty (SVarDef x e) = text "var" <+> text x <+> text ":=" <+> pretty e

@@ -1,7 +1,7 @@
 import Session
-import Translate
+import Language.Dafny.Translate
 
-import JS.Type
+import Language.JS.Type
 
 import Language.XWIDL.Spec
 import Language.XWIDL.WebIDL
@@ -16,6 +16,8 @@ main = do
     case result of
         Right defs ->
             case transDefsToSpec defs of
-                Right spec -> run spec
+                Right spec -> do
+                    putStrLn $ "Dump spec: " ++ show spec
+                    run spec
                 Left err -> putStrLn err
         Left err -> print err

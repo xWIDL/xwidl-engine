@@ -4,4 +4,7 @@ interface Bar {};
 interface Foo {
     ///- requires bar != null
     void use_bar(Bar? bar);
+
+    ///- ensures ret > 0.0
+    float pos();
 };

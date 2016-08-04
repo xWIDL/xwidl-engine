@@ -29,6 +29,8 @@ translateIface (Interface iname mInherit constructors _attrs gAttrs operations) 
                     Trait _ pattrs pmethods <- translateIface piface
                     return $ Trait (unName iname) (pattrs ++ attrs) (pmethods ++ methods)
                 Nothing -> throwError $ "Invalid inheritance: " ++ show parent
+        Nothing ->
+            return $ Trait (unName iname) attrs methods
     where
         attrs = map (\(x, ty) -> (unName x, iTypeToDyType ty)) (M.toList gAttrs)
         methods = map (translateConstructor iname) (zip [0..] constructors) ++
@@ -62,4 +64,5 @@ iTypeToDyType = \case
     TyDOMString   -> DTyString
     TyNullable (TyInterface x) -> DTyClass (unName x)
     TyInt -> DTyInt
+    TyFloat -> DTyReal
     ty -> error $ "Can't translate Type: " ++ show ty

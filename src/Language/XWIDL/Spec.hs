@@ -13,7 +13,7 @@ data Spec = Spec {
     _exceptions :: M.Map Name Exception,
     _enums      :: M.Map Name Enum,
     _cbs        :: M.Map Name Callback
-}
+} deriving Show
 
 data Definition = DefInterface Interface
                 | DefDictionary Dictionary

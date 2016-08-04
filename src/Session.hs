@@ -50,7 +50,9 @@ data SessionState = SessionState {
     -- Primitive type domains
     _pDomains :: M.Map PrimType [JAssert],
     -- unique namer
-    _namer :: Namer
+    _namer :: Namer,
+    -- name table
+    _names :: M.Map Name String
 }
 
 type Session = StateT SessionState IO
@@ -72,6 +74,7 @@ run spec =
                 handler <- socketToHandle sock ReadWriteMode
                 hSetBuffering handler NoBuffering
                 Just (Domains m) <- eGetLine handler
+                putStrLn $ "Get domains: " ++ show m
                 evalStateT loop (SessionState {
                     _heap = initHeap,
                     _tlms = M.empty,
@@ -81,7 +84,8 @@ run spec =
                     _snum = snum,
                     _traits = traits,
                     _pDomains = M.fromList m,
-                    _namer = initNamer
+                    _namer = initNamer,
+                    _names = M.empty
                 })
                 putStrLn $ "Ending session #" ++ show snum
 
@@ -178,18 +182,19 @@ handleEval e = inferType e >>= \case
 
 handlePrimEval :: PrimType -> JsExpr -> Session Reply
 handlePrimEval pty e = do
+    liftIO $ putStrLn "handlePrimEval"
     domainMap <- _pDomains <$> get
     let Just domains = M.lookup pty domainMap
     replies <- forM domains $ \assert -> do
         (tlm, _) <- withTarget "Main" $ do
             de <- compileExpr e
-            addStmt (SVarAssign "prim_val" de)
-            compileAssert pty assert
+            compileAssert de assert
         getSat tlm
     return (Replies pty $ map reportToBool replies)
 
 handleObjEval :: JsExpr -> Session Reply
 handleObjEval e = do
+    liftIO $ putStrLn "handleObjEval"
     (tlm, r) <- withTarget "Main" $ do
         e' <- compileExpr e
         JVRef r <- interpretExpr e' e
@@ -199,13 +204,14 @@ handleObjEval e = do
         Verified -> return (Sat (Just r))
         Failed -> return Unsat
 
-compileAssert :: PrimType -> JAssert -> Session ()
-compileAssert pty (JAssert (Name x) e) = do
+compileAssert :: DyExpr -> JAssert -> Session ()
+compileAssert de (JAssert n@(Name x) e) = do
     prefix <- fresh
     let vname = prefix ++ x
-    addStmt (SVarDecl vname (ptyToDyType pty))
+    addName n vname
+    addStmt $ SVarDef vname de
     e' <- compileExpr e
-    addStmt (SAssert e')
+    addStmt $ SAssert e'
 
 getSat :: TopLevelMethod -> Session Report
 getSat tlm = do
@@ -214,7 +220,9 @@ getSat tlm = do
     liftIO $ putStrLn ("Getting sat from REST...tlm: " ++ src)
     ans <- liftIO $ askDafny REST src
     case ans of
-        Right ret -> return ret
+        Right ret -> do
+            liftIO $ putStrLn ("Got sat: " ++ show ret)
+            return ret
         Left err -> error $ "Dafny connection error: " ++ err
 
 compileLVar :: LVar -> Session String
@@ -300,8 +308,17 @@ compileExpr (JNew i args) = do
 -}
 
 compileJsVal :: JsVal -> Session DyVal
-compileJsVal (JVRef r) = DVar <$> lookupBinding r
-compileJsVal (JVPrim p) = return (DPrim p)
+compileJsVal = \case
+    JVRef r  -> DVar <$> lookupBinding r
+    JVPrim p -> return (DPrim p)
+    JVVar n -> do
+        names <- _names <$> get
+        case M.lookup n names of
+            Just x -> return $ DVar x
+            Nothing -> error $ "Invalid name in JsVal: " ++ show n
+
+    other    -> error $ "Can't compile JsVal: " ++ show other
+
 -- compileJsVal (JSeq vs) = DSeq <$> mapM compileJsVal vs
 
 updateTarget :: (TopLevelMethod -> TopLevelMethod) -> Session ()
@@ -333,6 +350,9 @@ addRequire e =  updateTarget (\m -> m { _tlRequires = e : _tlRequires m })
 
 addStmt :: Stmt -> Session ()
 addStmt s = updateTarget (\m -> m { _tlBody = _tlBody m ++ [s] })
+
+addName :: Name -> String -> Session ()
+addName n x = modify (\s -> s { _names = M.insert n x (_names s)})
 
 allocOnHeap :: Name -> Session (JRef, String)
 allocOnHeap iname = do
@@ -380,6 +400,7 @@ iTypeToJsType = \case
     TyDOMString   -> JTyPrim PTyString
     TyNullable (TyInterface x) -> JTyObj x
     TyInt         -> JTyPrim PTyInt
+    TyFloat       -> JTyPrim PTyDouble
     ty -> error $ "Can't translate Type: " ++ show ty
 
 findCons :: Name -> [JsType] -> Session String
