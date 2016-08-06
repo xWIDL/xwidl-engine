@@ -72,9 +72,12 @@ data Operation = Operation {
     _imArgs :: [Argument],
     _imRet  :: Maybe Type,
     _imEnsures :: Maybe String,
-    _imRequires :: Maybe String
+    _imRequires :: Maybe String,
+    _imCbs :: [CallbackSpec]
     -- _imEffects :: Maybe String -- TODO
 } deriving Show
+
+data CallbackSpec = CallbackSpec Name String [String] deriving Show
 
 data Argument = Argument Name Type (Maybe W.Default) deriving Show
 

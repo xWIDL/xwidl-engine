@@ -1,5 +1,7 @@
 -- Translate WebIDL into xWIDL
-module Language.XWIDL.WebIDL (transDefsToSpec) where
+module Language.XWIDL.WebIDL (
+  transDefsToSpec, analyzeCBS
+) where
 
 import qualified Language.WebIDL.AST as W
 import Language.XWIDL.Spec
@@ -150,10 +152,10 @@ transIfaceAttr (W.Attribute tag _mInheritModifier _mReadOnlyModifer ty x) = do
 -- If an operation has no identifier, then it must be declared to be a special operation using one of the special keywords.
 transIfaceOp :: W.Operation Tag -> Trans ()
 transIfaceOp (W.Operation tag _extAttrs _mQualifier ret (Just f) args) = do
-    (mEns, mReq) <- analyzeOpAnn $ _comment tag
+    (mEns, mReq, cbs) <- analyzeOpAnn $ _comment tag
     args' <- mapM transArg args
     ret' <- transRet ret
-    emitOp $ Operation (i2n f) args' ret' mEns mReq
+    emitOp $ Operation (i2n f) args' ret' mEns mReq cbs
 transIfaceOp _ = error "Special operations are not supported yet"
 
 transDictMember :: W.DictionaryMember Tag -> Trans DictionaryMember
@@ -249,18 +251,29 @@ inspectAttrComment = mapM_ collectGhostAttr .
         isGhostAttrComment  = startswith "/- ghost" . strip
 
 analyzeConsAnn :: [String] -> (Maybe String, Maybe String)
-analyzeConsAnn = analyzeFunAnn
+analyzeConsAnn lines = let (e, r, _) = analyzeFunAnn lines in (e, r)
 
-analyzeFunAnn :: [String] -> (Maybe String, Maybe String)
+analyzeFunAnn :: [String] -> (Maybe String, Maybe String, [CallbackSpec])
 analyzeFunAnn blocks =
-    let ens      = fmap (strip . drop 10 . strip) $ listToMaybe $ filter isEnsureComment blocks
-        req      = fmap (strip . drop 11 . strip) $ listToMaybe $ filter isRequireComment blocks
-    in  (ens, req)
+    let ens = fmap (strip . drop 10 . strip) $ listToMaybe $ filter isEnsureComment blocks
+        req = fmap (strip . drop 11 . strip) $ listToMaybe $ filter isRequireComment blocks
+        cbs = map (analyzeCBS . strip . drop 11 . strip) $ filter isRequireComment blocks
+    in  (ens, req, cbs)
     where
         isEnsureComment  = startswith "/- ensures" . strip
         isRequireComment = startswith "/- requires" . strip
+        isCallbackComment = startswith "/- callback" . strip
 
-analyzeOpAnn :: [String] -> Trans (Maybe String, Maybe String)
+analyzeCBS :: String -> CallbackSpec
+analyzeCBS s =
+    let p = CallbackSpec <$> (i2n <$> pIdent) <*>
+                             (spaces *> string "when" *> spaces *> string "(" *> pStringEnds ")") <*>
+                             (spaces *> string "with" *> spaces *> (split ", " <$> pString))
+    in case tryParse p s of
+        Right cbs -> cbs
+        Left err -> error $ "Parse CallbackSpec error: " ++ show err
+
+analyzeOpAnn :: [String] -> Trans (Maybe String, Maybe String, [CallbackSpec])
 analyzeOpAnn blocks = do
     inspectAttrComment blocks
     return $ analyzeFunAnn blocks

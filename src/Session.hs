@@ -46,7 +46,9 @@ data SessionState = SessionState {
     -- Session number
     _snum :: Int,
     -- Traits text
-    _traits :: [Trait],
+    _traits :: M.Map String Trait,
+    -- New traits, which will be used as part of code emission if avaiable
+    _traitsNew :: Maybe (M.Map String Trait),
     -- Primitive type domains
     _pDomains :: M.Map PrimType [JAssert],
     -- unique namer
@@ -83,6 +85,7 @@ run spec =
                     _handler = handler,
                     _snum = snum,
                     _traits = traits,
+                    _traitsNew = Nothing,
                     _pDomains = M.fromList m,
                     _namer = initNamer,
                     _names = M.empty
@@ -215,8 +218,8 @@ compileAssert de (JAssert n@(Name x) e) = do
 
 getSat :: TopLevelMethod -> Session Report
 getSat tlm = do
-    traits <- _traits <$> get
-    let src = unlines (map (show . pretty) traits) ++ "\n" ++ show (pretty tlm)
+    traits <- getTraits
+    let src = unlines (map (show . pretty) $ M.elems traits) ++ "\n" ++ show (pretty tlm)
     liftIO $ putStrLn ("Getting sat from REST...tlm: " ++ src)
     ans <- liftIO $ askDafny REST src
     case ans of
@@ -224,6 +227,12 @@ getSat tlm = do
             liftIO $ putStrLn ("Got sat: " ++ show ret)
             return ret
         Left err -> error $ "Dafny connection error: " ++ err
+
+getTraits = do
+    tn <- _traitsNew <$> get
+    case tn of
+        Just tn -> return tn
+        Nothing -> _traits <$> get
 
 compileLVar :: LVar -> Session String
 compileLVar = \case
@@ -287,9 +296,13 @@ inferType = \case
 compileExpr :: JsExpr -> Session DyExpr
 compileExpr (JVal v) = DVal <$> compileJsVal v
 compileExpr (JInterface i) = DVal . DVar <$> compileLVar (LInterface i)
-compileExpr (JCall lvar (Name f) es) = do
-    x <- compileLVar lvar
-    DCall x f <$> mapM compileExpr es
+compileExpr (JCall lvar fn@(Name f) es) = do
+    op <- lookupOperationWithLvar fn lvar
+    ifM (hasCallbackArgs op)
+        (compileCallWithCbs lvar op es)
+        (do
+            x <- compileLVar lvar
+            DCall x f <$> mapM compileExpr es)
 compileExpr (JAccess lvar (Name attr)) = do
     x <- compileLVar lvar
     return $ DAccess x attr
@@ -300,6 +313,105 @@ compileExpr (JNew i args) = do
     v <- getPlatObj i
     args' <- mapM compileExpr args
     return (DCall v cons_name args')
+
+hasCallbackArgs :: Operation -> Session Bool
+hasCallbackArgs op = or <$> mapM (\(Argument _ ty _) -> isCbTy ty) (_imArgs op)
+
+compileCallWithCbs lvar op es = do
+    let fname = (unName $ _imName op)
+    iname <- lvarToIfaceName lvar
+    (es', cbs) <- foldM (\(es, cbs) (e, Argument argn argty _)-> do
+                            isCb <- isCbTy argty
+                            if isCb
+                                then do
+                                    cbspec <- queryCallbackSpec op argn
+                                    return (es, cbs ++ [(e, cbspec, argty)])
+                                else return (es ++ [e], cbs))
+                        ([], [])
+                        (zip es (_imArgs op))
+    replies <- forM cbs $ \(JEClos n, e, argty) -> do
+        -- first emit a method checking if this control-flow can go
+
+        modifyMethod (unName iname) fname
+                     (\m -> andRequires e m)
+        f <- fresh
+        (tlm, _) <- withTarget ("Main_" ++ f) $ do
+            x <- compileLVar lvar
+            de <- DCall x fname <$> mapM compileExpr es'
+            fx <- fresh
+            addStmt (SVarDef fx de)
+        ifM (reportToBool <$> getSat tlm)
+            (do
+                replies <- forM es' $ \e' -> do
+                            e'' <- compileExpr e'
+                            inferType e' >>= \case
+                                JTyObj iname -> do
+                                    (r, vname) <- allocOnHeap iname
+                                    addStmt (SVarDef vname e'')
+                                    return (Sat (Just r))
+                                JTyPrim pty -> do
+                                        domainMap <- _pDomains <$> get
+                                        let Just domains = M.lookup pty domainMap
+                                        replies <- forM domains $ \(JAssert name je) -> do
+                                            je' <- compileExpr je
+                                            let x = DVal (DVar (unName name))
+                                            modifyMethod (unName iname) fname
+                                                         (\m -> andRequires (prettyShow (DRel Equal x e''))
+                                                                    (andRequires (prettyShow je') m))
+                                            f <- fresh
+                                            (tlm, _) <- withTarget ("Main_" ++ f) $ do
+                                                x <- compileLVar lvar
+                                                de <- DCall x fname <$> mapM compileExpr es'
+                                                fx <- fresh
+                                                addStmt (SVarDef fx de)
+                                            reportToReply <$> getSat tlm
+                                        return (ReplyCallback replies)
+                return (Just replies))
+            (return Nothing)
+    -- we should collect replies here and send back
+    x <- compileLVar lvar
+    DCall x fname <$> mapM compileExpr es'
+
+andRequires :: String -> TraitMemberMethod -> TraitMemberMethod
+andRequires s m = m { _tmRequires = fmap (\s -> "(" ++ s ++ ") && " ++ s) (_tmRequires m)}
+
+isCbTy :: Type -> Session Bool
+isCbTy (TyInterface n) = do
+    cbs <- _cbs . _spec <$> get
+    case M.lookup n cbs of
+        Nothing -> return True
+        Just _  -> return False
+
+modifyMethod :: String -> String -> (TraitMemberMethod -> TraitMemberMethod) -> Session ()
+modifyMethod tname fname f = do
+    modifyTrait tname (\t ->
+        let mtds = _tmethods t in
+        case M.lookup fname mtds of
+            Just mtd -> t { _tmethods = M.insert fname (f mtd) mtds }
+            Nothing  -> t)
+
+modifyTrait :: String -> (Trait -> Trait) -> Session ()
+modifyTrait x f = do
+    traits <- getTraits
+    case M.lookup x traits of
+        Just t -> modify (\s -> s { _traitsNew = Just (M.insert x (f t) traits)})
+        Nothing -> return ()
+
+queryCallbackSpec :: Operation -> Name -> Session String
+queryCallbackSpec op x =
+    case filter (\(CallbackSpec x' _ _) -> x' == x) (_imCbs op) of
+        (CallbackSpec _ s _):[] -> return s
+        _ -> error "queryCallbackSpec failed"
+
+lvarToIfaceName = \case
+    LInterface iname -> return iname
+    LVal v -> case v of
+        JVRef r -> do
+            JsObj iname <- lookupObj r
+            return iname
+
+lookupOperationWithLvar fname lvar =
+    lvarToIfaceName lvar >>= \iname -> lookupOperation iname fname
 
 {-
     DRef  -> DVar
@@ -451,3 +563,9 @@ initNamer = Namer 0
 
 freshName :: Namer -> (String, Namer)
 freshName (Namer x) = ("fresh_" ++ show x, Namer (x + 1))
+
+ifM :: Monad m => m Bool -> m a -> m a -> m a
+ifM x a b = x >>= \x -> if x then a else b
+
+
+prettyShow = show . pretty

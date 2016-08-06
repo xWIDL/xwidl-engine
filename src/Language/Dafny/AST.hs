@@ -7,7 +7,11 @@ import Language.JS.Platform (RelBiOp(..))
 
 import qualified Data.Map as M
 
-data Trait = Trait String [TraitMemberAttr] [TraitMemberMethod] deriving (Show)
+data Trait = Trait {
+    _tname :: String,
+    _tattrs :: M.Map String TraitMemberAttr,
+    _tmethods :: M.Map String TraitMemberMethod
+} deriving (Show)
 
 type TraitMemberAttr = (String, DyType)
 
@@ -60,7 +64,8 @@ data DyType = DTyClass String
 
 instance Pretty Trait where
     pretty (Trait t ma mm) = text "trait" <+> text t <+>
-                             braces (line <> vsep (map (indent 4 . prettyAttr) ma ++ map (indent 4 . pretty) mm) <> line)
+                             braces (line <> vsep (map (indent 4 . prettyAttr) (M.elems ma) ++
+                                                   map (indent 4 . pretty) (M.elems mm)) <> line)
 
 instance Pretty TopLevelMethod where
     pretty (TopLevelMethod x args requires body) =
