@@ -136,7 +136,8 @@ reply r = (_handler <$> get) >>= \hd -> liftIO (BS.hPut hd (BSL.toStrict (encode
 dispatch :: Command -> Session (Maybe Reply)
 dispatch = \case
     CInvoke lvar x args -> Just <$> handleInvoke lvar x args
-    CEval e -> Just <$> handleEval e
+    -- CEval e -> Just <$> handleEval e
+    CCall lvar f args -> Just <$> handleCall lvar f args
     CAssert e -> Just <$> handleAssert e
     CEnd -> return Nothing
 {-
@@ -284,13 +285,13 @@ inferType = \case
             return (JTyObj iname)
         JVPrim prim -> return (JTyPrim $ inferPrimType prim)
 
-    JCall lvar f _ -> case lvar of
-        LInterface iname -> findIfaceMethodRetTy iname f
-        LVal v -> case v of
-            JVRef r -> do
-                JsObj iname <- lookupObj r
-                findIfaceMethodRetTy iname f
-            _ -> error "Unable to process invocation on non-JRef type now"
+    -- JCall lvar f _ -> case lvar of
+    --     LInterface iname -> findIfaceMethodRetTy iname f
+    --     LVal v -> case v of
+    --         JVRef r -> do
+    --             JsObj iname <- lookupObj r
+    --             findIfaceMethodRetTy iname f
+    --         _ -> error "Unable to process invocation on non-JRef type now"
 
     JAccess lvar attr -> case lvar of
         LInterface iname -> findIfaceAttrTy iname attr
@@ -314,18 +315,21 @@ inferType = \case
                 Just ty -> return (iTypeToJsType ty)
                 Nothing -> return (JTyPrim PTyNull)
 
+handleCall lvar fn@(Name f) es = do
+    op <- lookupOperationWithLvar fn lvar
+    ifM (hasCallbackArgs op)
+        (compileCallWithCbs lvar op es)
+        (return () -- do something
+            -- (tlm, _) <- withTarget "Main" $ do
+            --     x <- compileLVar lvar
+            --     DCall x f <$> mapM compileExpr es
+            --     reportToReply <$> getSat tlm
+            )
+    return (Sat Nothing)
+
 compileExpr :: JsExpr -> Session DyExpr
 compileExpr (JVal v) = DVal <$> compileJsVal v
 compileExpr (JInterface i) = DVal . DVar <$> compileLVar (LInterface i)
-compileExpr (JCall lvar fn@(Name f) es) = do
-    op <- lookupOperationWithLvar fn lvar
-    ifM (hasCallbackArgs op)
-        (do
-            compileCallWithCbs lvar op es
-            return (DVal (DPrim (PInt 0))))
-        (do
-            x <- compileLVar lvar
-            DCall x f <$> mapM compileExpr es)
 compileExpr (JAccess lvar (Name attr)) = do
     x <- compileLVar lvar
     return $ DAccess x attr
