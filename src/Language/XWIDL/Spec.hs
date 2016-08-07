@@ -5,20 +5,18 @@ import Language.JS.Type
 
 import qualified Data.Map as M
 import qualified Language.WebIDL.AST as W
-import Prelude hiding (Enum)
 
 data Spec = Spec {
     _ifaces     :: M.Map Name Interface,
     _dicts      :: M.Map Name Dictionary,
     _exceptions :: M.Map Name Exception,
-    _enums      :: M.Map Name Enum,
     _cbs        :: M.Map Name Callback
 } deriving Show
 
 data Definition = DefInterface Interface
                 | DefDictionary Dictionary
                 | DefException Exception
-                | DefEnum Enum
+                -- | DefEnum Enum
                 | DefCallback Callback
                 deriving Show
 
@@ -69,7 +67,7 @@ data ExceptionMember = ExConst Const
 
 data Const = Const Type Name W.ConstValue deriving Show
 
-data Enum = Enum Name [String] deriving Show
+-- data Enum = Enum Name [String] deriving Show
 
 data Operation = Operation {
     _imName :: Name,

@@ -17,7 +17,7 @@ import Control.Monad.Except
 type Trans = ReaderT Spec (Except String)
 
 translateSpec :: Spec -> Either String (M.Map String Trait)
-translateSpec s@(Spec ifaces _ _ _ _) =
+translateSpec s@(Spec ifaces _ _ _) =
     runExcept (runReaderT (M.fromList <$> mapM translateIface (M.elems ifaces)) s)
 
 translateIface :: Interface -> Trans (String, Trait)

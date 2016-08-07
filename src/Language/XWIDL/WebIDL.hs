@@ -23,7 +23,6 @@ data TransState = TransState {
 -- Interface translation
 type Trans = StateT TransState (Except String)
 
-
 transDefsToSpec :: [W.Definition Tag] -> Either String Spec
 transDefsToSpec defs = do
     s <- runExcept (flip execStateT initState $ do
@@ -32,7 +31,7 @@ transDefsToSpec defs = do
                 )
     let defsMap = M.delete dummyName (_emitted s)
     -- ((a0 -> b0 -> b0) -> b0 -> t0 a0 -> b0))
-    return (foldr distribute (Spec M.empty M.empty M.empty M.empty M.empty) (M.toList defsMap))
+    return (foldr distribute (Spec M.empty M.empty M.empty M.empty) (M.toList defsMap))
     where
         initState = TransState {
             _emitted = M.empty,
@@ -44,7 +43,7 @@ transDefsToSpec defs = do
         distribute (x, DefInterface i) s = s { _ifaces = M.insert x i (_ifaces s) }
         distribute (x, DefDictionary d) s = s { _dicts = M.insert x d (_dicts s) }
         distribute (x, DefException e) s = s { _exceptions = M.insert x e (_exceptions s) }
-        distribute (x, DefEnum e) s = s { _enums = M.insert x e (_enums s) }
+        -- distribute (x, DefEnum e) s = s { _enums = M.insert x e (_enums s) }
         distribute (x, DefCallback c) s = s { _cbs = M.insert x c (_cbs s) }
 
 transDef :: W.Definition Tag -> Trans ()
@@ -119,7 +118,7 @@ transException (W.Exception _ x mInherit members) = do
     mapM_ transExceptionMember members
 
 transEnum :: W.Enum Tag -> Trans ()
-transEnum (W.Enum _ i evals) = replaceFocus (DefEnum (Enum (i2n i) (map (\(W.EnumValue s) -> s) evals)))
+transEnum (W.Enum _ i _) = modify (\s -> s { _typemap = M.insert (i2n i) TyDOMString (_typemap s) })
 
 transTypeDef :: W.Typedef Tag -> Trans ()
 transTypeDef (W.Typedef _ ty i) = do
@@ -313,5 +312,5 @@ nameOf :: Definition -> Name
 nameOf (DefInterface i) = _iName i
 nameOf (DefDictionary (Dictionary name _ _)) = name
 nameOf (DefException (Exception name _ _)) = name
-nameOf (DefEnum (Enum name _)) = name
+-- nameOf (DefEnum (Enum name _)) = name
 nameOf (DefCallback (Callback name _ _)) = name
