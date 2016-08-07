@@ -355,8 +355,8 @@ compileCallWithCbs lvar op es = do
                                             je' <- compileExpr je
                                             let x = DVal (DVar (unName name))
                                             modifyMethod (unName iname) fname
-                                                         (\m -> andRequires (prettyShow (DRel Equal x e''))
-                                                                    (andRequires (prettyShow je') m))
+                                                         ( letBindRequires (unName name) e''
+                                                         . andRequires (prettyShow je'))
                                             f <- fresh
                                             (tlm, _) <- withTarget ("Main_" ++ f) $ do
                                                 x <- compileLVar lvar
@@ -372,9 +372,15 @@ compileCallWithCbs lvar op es = do
     DCall x fname <$> mapM compileExpr es'
 
 andRequires :: String -> TraitMemberMethod -> TraitMemberMethod
-andRequires r m = m { _tmRequires = case _tmRequires m of 
+andRequires r m = modifyRequires m (\case
                                         Just s  -> Just ("(" ++ s ++ ") && " ++ r)
-                                        Nothing -> Just r }
+                                        Nothing -> Just r)
+
+letBindRequires :: String -> DyExpr -> TraitMemberMethod -> TraitMemberMethod
+letBindRequires x e m = modifyRequires m (fmap (\s -> "var " ++ x ++ " := " ++ prettyShow e ++ "; (" ++ s ++ ")"))
+
+modifyRequires :: TraitMemberMethod -> (Maybe String -> Maybe String) -> TraitMemberMethod
+modifyRequires m f = m { _tmRequires = f (_tmRequires m) }
 
 isCbTy :: Type -> Session Bool
 isCbTy (TyInterface n) = do
