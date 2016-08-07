@@ -221,7 +221,7 @@ getSat tlm = do
     traits <- getTraits
     let src = unlines (map (show . pretty) $ M.elems traits) ++ "\n" ++ show (pretty tlm)
     liftIO $ putStrLn ("Getting sat from REST...tlm: " ++ src)
-    ans <- liftIO $ askDafny REST src
+    ans <- liftIO $ askDafny (Local "/home/zhangz/xwidl/dafny/Binaries") src
     case ans of
         Right ret -> do
             liftIO $ putStrLn ("Got sat: " ++ show ret)
