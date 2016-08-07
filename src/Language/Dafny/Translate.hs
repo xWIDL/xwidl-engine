@@ -17,8 +17,12 @@ import Control.Monad.Except
 type Trans = ReaderT Spec (Except String)
 
 translateSpec :: Spec -> Either String (M.Map String Trait)
-translateSpec s@(Spec ifaces _ _ _) =
-    runExcept (runReaderT (M.fromList <$> mapM translateIface (M.elems ifaces)) s)
+translateSpec s@(Spec ifaces dicts _ _) =
+    runExcept (runReaderT (do
+                                ifaceTraits <- M.fromList <$> mapM translateIface (M.elems ifaces)
+                                dictTraits <- M.fromList <$> mapM translateDict (M.elems dicts)
+                                return (ifaceTraits `M.union` dictTraits)
+                                ) s)
 
 translateIface :: Interface -> Trans (String, Trait)
 translateIface (Interface iname mInherit constructors _attrs gAttrs operations) = do
@@ -38,6 +42,22 @@ translateIface (Interface iname mInherit constructors _attrs gAttrs operations) 
                 Nothing -> throwError $ "Invalid inheritance: " ++ show parent
         Nothing ->
             return (tname, Trait tname attrs methods)
+
+translateDict :: Dictionary -> Trans (String, Trait)
+translateDict (Dictionary dname mInherit dmembers) = do
+    let attrs = M.fromList (map (\(DictionaryMember ty x _) ->
+                                  (unName x, (unName x, iTypeToDyType ty))) dmembers)
+    let tname = unName dname
+    case mInherit of
+        Just parent -> do
+            dicts <- _dicts <$> ask
+            case M.lookup parent dicts of
+                Just pdict -> do -- TODO: optimization
+                    Trait _ pattrs _ <- snd <$> translateDict pdict
+                    return (tname, Trait tname (pattrs `M.union` attrs) M.empty)
+                Nothing -> throwError $ "Invalid inheritance: " ++ show parent
+        Nothing ->
+            return (tname, Trait tname attrs M.empty)
 
 translateConstructor :: Name -> (Int, InterfaceConstructor) -> (String, TraitMemberMethod)
 translateConstructor iname (idx, InterfaceConstructor{..}) = (tmName, tmm)
