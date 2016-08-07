@@ -219,6 +219,7 @@ compileAssert de (JAssert n@(Name x) e) = do
 getSat :: TopLevelMethod -> Session Report
 getSat tlm = do
     traits <- getTraits
+    modify (\s -> s { _traitsNew = Nothing })
     let src = unlines (map (show . pretty) $ M.elems traits) ++ "\n" ++ show (pretty tlm)
     liftIO $ putStrLn ("Getting sat from REST...tlm: " ++ src)
     ans <- liftIO $ askDafny (Local "/home/zhangz/xwidl/dafny/Binaries") src
