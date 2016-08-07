@@ -44,6 +44,7 @@ data DyExpr = DVal DyVal
             | DCall String String [DyExpr]
             | DAccess String String
             | DRel RelBiOp DyExpr DyExpr
+            | DStrRepr String
             deriving (Show)
 
 data Stmt = SVarDecl String DyType -- var x : <type>;
@@ -104,6 +105,7 @@ instance Pretty DyExpr where
                               parens (hcat (punctuate (comma <> space) (map pretty args)))
     pretty (DAccess x attr) = text (x ++ "." ++ attr)
     pretty (DRel op a b) = pretty a <+> pretty op <+> pretty b
+    pretty (DStrRepr s) = text s
 
 instance Pretty DyVal where
     pretty (DVar x) = text x
@@ -116,6 +118,7 @@ instance Pretty RelBiOp where
         NotEqual -> text "!="
         Equal -> text "=="
         And -> text "&&"
+        Or -> text "||"
         LessThan -> text "<"
         LessEq -> text "<="
         GreaterThan -> text ">"
