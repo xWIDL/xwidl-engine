@@ -257,7 +257,7 @@ analyzeFunAnn :: [String] -> (Maybe String, Maybe String, [CallbackSpec])
 analyzeFunAnn blocks =
     let ens = fmap (strip . drop 10 . strip) $ listToMaybe $ filter isEnsureComment blocks
         req = fmap (strip . drop 11 . strip) $ listToMaybe $ filter isRequireComment blocks
-        cbs = map (analyzeCBS . strip . drop 11 . strip) $ filter isRequireComment blocks
+        cbs = map (analyzeCBS . strip . drop 12 . strip) $ filter isCallbackComment blocks
     in  (ens, req, cbs)
     where
         isEnsureComment  = startswith "/- ensures" . strip
@@ -271,7 +271,7 @@ analyzeCBS s =
                              (spaces *> string "with" *> spaces *> (split ", " <$> pString))
     in case tryParse p s of
         Right cbs -> cbs
-        Left err -> error $ "Parse CallbackSpec error: " ++ show err
+        Left err -> error $ "Parse CallbackSpec error: " ++ show err ++ " of " ++ s
 
 analyzeOpAnn :: [String] -> Trans (Maybe String, Maybe String, [CallbackSpec])
 analyzeOpAnn blocks = do

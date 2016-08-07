@@ -1,4 +1,4 @@
-module Session (run) where
+module Session (run, andRequires) where
 
 import Language.Dafny.Translate
 import Language.Dafny.AST
@@ -332,8 +332,7 @@ compileCallWithCbs lvar op es = do
     replies <- forM cbs $ \(JEClos n, e, argty) -> do
         -- first emit a method checking if this control-flow can go
 
-        modifyMethod (unName iname) fname
-                     (\m -> andRequires e m)
+        modifyMethod (unName iname) fname (andRequires e)
         f <- fresh
         (tlm, _) <- withTarget ("Main_" ++ f) $ do
             x <- compileLVar lvar
@@ -373,14 +372,17 @@ compileCallWithCbs lvar op es = do
     DCall x fname <$> mapM compileExpr es'
 
 andRequires :: String -> TraitMemberMethod -> TraitMemberMethod
-andRequires s m = m { _tmRequires = fmap (\s -> "(" ++ s ++ ") && " ++ s) (_tmRequires m)}
+andRequires r m = m { _tmRequires = case _tmRequires m of 
+                                        Just s  -> Just ("(" ++ s ++ ") && " ++ r)
+                                        Nothing -> Just r }
 
 isCbTy :: Type -> Session Bool
 isCbTy (TyInterface n) = do
     cbs <- _cbs . _spec <$> get
     case M.lookup n cbs of
-        Nothing -> return True
-        Just _  -> return False
+        Nothing -> return False
+        Just _  -> return True
+isCbTy _ = return False
 
 modifyMethod :: String -> String -> (TraitMemberMethod -> TraitMemberMethod) -> Session ()
 modifyMethod tname fname f = do
@@ -427,7 +429,9 @@ compileJsVal = \case
         names <- _names <$> get
         case M.lookup n names of
             Just x -> return $ DVar x
-            Nothing -> error $ "Invalid name in JsVal: " ++ show n
+            Nothing -> do
+                warning $ "Invalid name in JsVal: " ++ show n ++ ", fall back to direct name"
+                return (DVar (unName n))
 
     other    -> error $ "Can't compile JsVal: " ++ show other
 
@@ -569,3 +573,5 @@ ifM x a b = x >>= \x -> if x then a else b
 
 
 prettyShow = show . pretty
+
+warning s = liftIO (putStrLn $ "[WARNING] " ++ s)
