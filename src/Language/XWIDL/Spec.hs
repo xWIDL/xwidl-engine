@@ -81,7 +81,11 @@ data Operation = Operation {
 
 data CallbackSpec = CallbackSpec Name String [String] deriving Show
 
-data Argument = Argument Name Type (Maybe W.Default) deriving Show
+data Argument = Argument {
+  _argName :: Name,
+  _argTy :: Type,
+  _argOptDef :: Maybe W.Default
+} deriving Show
 
 data InterfaceConstructor = InterfaceConstructor {
     _icArgs :: [Argument],
@@ -97,4 +101,4 @@ data Type = TyInterface Name
           | TyBuiltIn Name
           | TyArray Type
           | TyUnion [Type]
-          deriving (Show)
+          deriving (Eq, Show)

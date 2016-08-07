@@ -48,16 +48,26 @@ translateDict (Dictionary dname mInherit dmembers) = do
     let attrs = M.fromList (map (\(DictionaryMember ty x _) ->
                                   (unName x, (unName x, iTypeToDyType ty))) dmembers)
     let tname = unName dname
+    -- constructor
+    let cons = TraitMemberMethod {
+                    _tmName = "new",
+                    _tmArgs = [],
+                    _tmRet  = Just ("ret", DTyClass (unName dname)),
+                    _tmEnsures = Nothing,
+                    _tmRequires = Nothing
+                    -- _tmImpl = Nothing
+                }
+    let methods = M.singleton "new" cons
     case mInherit of
         Just parent -> do
             dicts <- _dicts <$> ask
             case M.lookup parent dicts of
                 Just pdict -> do -- TODO: optimization
-                    Trait _ pattrs _ <- snd <$> translateDict pdict
-                    return (tname, Trait tname (pattrs `M.union` attrs) M.empty)
+                    Trait _ pattrs pmethods <- snd <$> translateDict pdict
+                    return (tname, Trait tname (pattrs `M.union` attrs) pmethods)
                 Nothing -> throwError $ "Invalid inheritance: " ++ show parent
         Nothing ->
-            return (tname, Trait tname attrs M.empty)
+            return (tname, Trait tname attrs methods)
 
 translateConstructor :: Name -> (Int, InterfaceConstructor) -> (String, TraitMemberMethod)
 translateConstructor iname (idx, InterfaceConstructor{..}) = (tmName, tmm)

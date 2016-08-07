@@ -164,11 +164,13 @@ interpretExpr de je = inferType je >>= \case
         _ -> return $ JVPrim (defaultPrim prim)
 
 handleInvoke :: LVar -> Name -> [JsExpr] -> Session Reply
-handleInvoke lvar x args = do
+handleInvoke lvar fname args = do
     (tlm, _) <- withTarget "Main" $ do
         v <- compileLVar lvar
-        args' <- mapM compileExpr args
-        addStmt (SInvoke v (unName x) args')
+        op <- lookupOperationWithLvar fname lvar
+        let argtys = map _argTy (_imArgs op)
+        args' <- mapM (uncurry compileExpr) (zip args argtys)
+        addStmt (SInvoke v (unName fname) args')
     reportToReply <$> getSat tlm
 
 reportToReply :: Report -> Reply
@@ -181,25 +183,25 @@ reportToBool = \case
     Verified -> True
     Failed   -> False
 
-handleEval :: JsExpr -> Session Reply
-handleEval e = inferType e >>= \case
-    JTyPrim pty -> handlePrimEval pty e
-    JTyObj _    -> handleObjEval e
-    _           -> error "Invalid eval"
+-- handleEval :: JsExpr -> Session Reply
+-- handleEval e = inferType e >>= \case
+--     JTyPrim pty -> handlePrimEval pty e
+--     JTyObj _    -> handleObjEval e
+--     _           -> error "Invalid eval"
 
-handlePrimEval :: PrimType -> JsExpr -> Session Reply
-handlePrimEval pty e = do
-    liftIO $ putStrLn "handlePrimEval"
-    domainMap <- _pDomains <$> get
-    let Just domains = M.lookup pty domainMap
-    let assertions = domainsToAssertions domains
-    (_, flags) <- head <$> flip filterM assertions
-                          (\(assert, _) -> do
-                                (tlm, _) <- withTarget "Main" $ do
-                                    de <- compileExpr e
-                                    compileAssert de assert
-                                reportToBool <$> getSat tlm)
-    return (Replies pty flags)
+-- handlePrimEval :: PrimType -> JsExpr -> Session Reply
+-- handlePrimEval pty e = do
+--     liftIO $ putStrLn "handlePrimEval"
+--     domainMap <- _pDomains <$> get
+--     let Just domains = M.lookup pty domainMap
+--     let assertions = domainsToAssertions domains
+--     (_, flags) <- head <$> flip filterM assertions
+--                           (\(assert, _) -> do
+--                                 (tlm, _) <- withTarget "Main" $ do
+--                                     de <- compileExpr e ()
+--                                     compileAssert de assert
+--                                 reportToBool <$> getSat tlm)
+--     return (Replies pty flags)
 
 domainsToAssertions :: [JAssert] -> [(JAssert, [Bool])]
 domainsToAssertions domAsses =
@@ -216,26 +218,26 @@ domainsToAssertions domAsses =
         conj' (e:[]) = e
         conj' (e:es) = JRel Or e (conj' es)
 
-handleObjEval :: JsExpr -> Session Reply
-handleObjEval e = do
-    liftIO $ putStrLn "handleObjEval"
-    (tlm, r) <- withTarget "Main" $ do
-        e' <- compileExpr e
-        JVRef r <- interpretExpr e' e
-        return r
-    report <- getSat tlm
-    case report of
-        Verified -> return (Sat (Just r))
-        Failed -> return Unsat
+-- handleObjEval :: JsExpr -> Session Reply
+-- handleObjEval e = do
+--     liftIO $ putStrLn "handleObjEval"
+--     (tlm, r) <- withTarget "Main" $ do
+--         e' <- compileExpr e
+--         JVRef r <- interpretExpr e' e
+--         return r
+--     report <- getSat tlm
+--     case report of
+--         Verified -> return (Sat (Just r))
+--         Failed -> return Unsat
 
-compileAssert :: DyExpr -> JAssert -> Session ()
-compileAssert de (JAssert n@(Name x) e) = do
-    prefix <- fresh
-    let vname = prefix ++ x
-    addName n vname
-    addStmt $ SVarDef vname de
-    e' <- compileExpr e
-    addStmt $ SAssert e'
+-- compileAssert :: DyExpr -> JAssert -> Session ()
+-- compileAssert de (JAssert n@(Name x) e) = do
+--     prefix <- fresh
+--     let vname = prefix ++ x
+--     addName n vname
+--     addStmt $ SVarDef vname de
+--     e' <- compileExpr e
+--     addStmt $ SAssert e'
 
 getSat :: TopLevelMethod -> Session Report
 getSat tlm = do
@@ -266,7 +268,7 @@ compileLVar = \case
 handleAssert :: JsExpr -> Session Reply
 handleAssert e = do
     (tlm, _) <- withTarget "Main" $ do
-        e' <- compileExpr e
+        e' <- compileExpr e TyBoolean
         addStmt (SAssert e')
     reportToReply <$> getSat tlm
 
@@ -327,18 +329,29 @@ handleCall lvar fn@(Name f) es = do
             )
     return (Sat Nothing)
 
-compileExpr :: JsExpr -> Session DyExpr
-compileExpr (JVal v) = DVal <$> compileJsVal v
-compileExpr (JInterface i) = DVal . DVar <$> compileLVar (LInterface i)
-compileExpr (JAccess lvar (Name attr)) = do
+compileExpr :: JsExpr -> Type -> Session DyExpr
+
+compileExpr (JVal v) ty = DVal <$> compileJsVal v ty
+
+compileExpr (JInterface i) (TyInterface i')
+    | i == i'   = DVal . DVar <$> compileLVar (LInterface i)
+    | otherwise = error "compileExpr: iface name doesn't match"
+
+compileExpr (JAccess lvar (Name attr)) _ = do
     x <- compileLVar lvar
     return $ DAccess x attr
-compileExpr (JRel op e1 e2) = DRel op <$> compileExpr e1 <*> compileExpr e2
-compileExpr (JNew i args) = do
+
+compileExpr (JRel op e1 e2) TyBoolean = do
+    ty1 <- jsTypeToIType <$> inferType e1
+    ty2 <- jsTypeToIType <$> inferType e2
+    if ty1 == ty2 then
+        DRel op <$> compileExpr e1 ty1 <*> compileExpr e2 ty2
+        else error "biop diff type"
+compileExpr (JNew i args) (TyInterface i') | i == i' = do
     types <- mapM inferType args
     cons_name <- findCons i types
     v <- getPlatObj i
-    args' <- mapM compileExpr args
+    args' <- mapM (uncurry compileExpr) (zip args $ map jsTypeToIType types)
     return (DCall v cons_name args')
 
 hasCallbackArgs :: Operation -> Session Bool
@@ -353,7 +366,7 @@ compileCallWithCbs lvar op es = do
                                 Just cb -> do
                                     let cbspec = queryCallbackSpec op argn
                                     return (es, cbs ++ [(e, cbspec, cb)])
-                                Nothing -> return (es ++ [e], cbs))
+                                Nothing -> return (es ++ [(e, argty)], cbs))
                         ([], [])
                         (zip es (_imArgs op))
     cbmReplies <- forM cbs $ \(JEClos n, CallbackSpec _ reqe withEs, cb) -> do
@@ -362,7 +375,7 @@ compileCallWithCbs lvar op es = do
         f <- fresh
         (tlm, _) <- withTarget ("Main_" ++ f) $ do
             x <- compileLVar lvar
-            de <- DCall x fname <$> mapM compileExpr es'
+            de <- DCall x fname <$> mapM (uncurry compileExpr) es'
             fx <- fresh
             addStmt (SVarDef fx de)
         eReport <- getSat tlm
@@ -380,7 +393,7 @@ compileCallWithCbs lvar op es = do
                                             let assertions = domainsToAssertions domains
                                             (_, flags) <- head <$> flip filterM assertions
                                                                 (\(JAssert name je, _) -> do
-                                                                        je' <- compileExpr je
+                                                                        je' <- compileExpr je TyBoolean
                                                                         let x = DVal (DVar (unName name))
                                                                         modifyMethod (unName iname) fname
                                                                                      ( letBindRequires (unName name) (DStrRepr withE)
@@ -388,7 +401,7 @@ compileCallWithCbs lvar op es = do
                                                                         f <- fresh
                                                                         (tlm, _) <- withTarget ("Main_" ++ f) $ do
                                                                             x <- compileLVar lvar
-                                                                            de <- DCall x fname <$> mapM compileExpr es'
+                                                                            de <- DCall x fname <$> mapM (uncurry compileExpr) es'
                                                                             fx <- fresh
                                                                             addStmt (SVarDef fx de)
                                                                         reportToBool <$> getSat tlm)
@@ -452,8 +465,8 @@ lookupOperationWithLvar fname lvar =
     -- JSeq  -> DSeq
 -}
 
-compileJsVal :: JsVal -> Session DyVal
-compileJsVal = \case
+compileJsVal :: JsVal -> Type -> Session DyVal
+compileJsVal v ty = case v of
     JVRef r  -> DVar <$> lookupBinding r
     JVPrim p -> return (DPrim p)
     JVVar n -> do
@@ -463,7 +476,18 @@ compileJsVal = \case
             Nothing -> do
                 warning $ "Invalid name in JsVal: " ++ show n ++ ", fall back to direct name"
                 return (DVar (unName n))
-
+    JVDict dict ->
+        case ty of
+            TyInterface i -> do
+                dicts <- _dicts . _spec <$> get
+                let Just dict = M.lookup i dicts
+                -- let names = dict TODO: do some checking here
+                cons_name <- findCons i []
+                platv <- getPlatObj i
+                vname <- fresh
+                addStmt (SVarDef vname (DCall platv cons_name []))
+                return (DVar vname)
+            _ -> error "Unable to handle dict"
     other    -> error $ "Can't compile JsVal: " ++ show other
 
 -- compileJsVal (JSeq vs) = DSeq <$> mapM compileJsVal vs
@@ -548,6 +572,16 @@ iTypeToJsType = \case
     TyNullable (TyInterface x) -> JTyObj x
     TyInt         -> JTyPrim PTyInt
     TyFloat       -> JTyPrim PTyDouble
+    ty -> error $ "Can't translate Type: " ++ show ty
+
+
+jsTypeToIType :: JsType -> Type
+jsTypeToIType = \case
+    JTyObj x -> TyInterface x
+    JTyPrim PTyString -> TyDOMString
+    JTyObj x -> TyNullable (TyInterface x)
+    JTyPrim PTyInt -> TyInt
+    JTyPrim PTyDouble -> TyFloat
     ty -> error $ "Can't translate Type: " ++ show ty
 
 findCons :: Name -> [JsType] -> Session String
