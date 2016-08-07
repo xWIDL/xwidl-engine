@@ -16,7 +16,7 @@ import Control.Monad.State
 import Control.Monad (forM_)
 
 import qualified Data.Map as M
-import Data.Maybe (fromJust)
+import Data.Maybe (fromJust, isJust)
 import Data.Char (toLower)
 import Data.Atomics.Counter
 import Data.Aeson
@@ -126,9 +126,12 @@ loop = do
                     return Nothing
     case mReply of
         Nothing -> return ()
-        Just reply -> do
-            liftIO $ BS.hPut handler (BSL.toStrict (encode reply) `BC.snoc` '\n')
+        Just r -> do
+            liftIO $ BS.hPut handler (BSL.toStrict (encode r) `BC.snoc` '\n')
             loop
+
+reply :: Reply -> Session ()
+reply r = (_handler <$> get) >>= \hd -> liftIO (BS.hPut hd (BSL.toStrict (encode r) `BC.snoc` '\n'))
 
 dispatch :: Command -> Session (Maybe Reply)
 dispatch = \case
@@ -188,12 +191,28 @@ handlePrimEval pty e = do
     liftIO $ putStrLn "handlePrimEval"
     domainMap <- _pDomains <$> get
     let Just domains = M.lookup pty domainMap
-    replies <- forM domains $ \assert -> do
-        (tlm, _) <- withTarget "Main" $ do
-            de <- compileExpr e
-            compileAssert de assert
-        getSat tlm
-    return (Replies pty $ map reportToBool replies)
+    let assertions = domainsToAssertions domains
+    (_, flags) <- head <$> flip filterM assertions
+                          (\(assert, _) -> do
+                                (tlm, _) <- withTarget "Main" $ do
+                                    de <- compileExpr e
+                                    compileAssert de assert
+                                reportToBool <$> getSat tlm)
+    return (Replies pty flags)
+
+domainsToAssertions :: [JAssert] -> [(JAssert, [Bool])]
+domainsToAssertions domAsses =
+    let (JAssert x _) = head domAsses
+        conj es = JAssert x (conj' es)
+        es            = map (\(JAssert _ e) -> e) domAsses
+    in  map (\bm -> (conj $ map fst $ filter snd (zip es bm), bm)) (f (length es))
+    where
+        f 0 = []
+        f 1 = [[True], [False]]
+        f n = let bms = f (n - 1)
+              in  map (True:) bms ++ map (False:) bms
+        conj' (e:[]) = e
+        conj' (e:es) = JRel Or e (conj' es)
 
 handleObjEval :: JsExpr -> Session Reply
 handleObjEval e = do
@@ -219,8 +238,9 @@ compileAssert de (JAssert n@(Name x) e) = do
 getSat :: TopLevelMethod -> Session Report
 getSat tlm = do
     traits <- getTraits
+    modify (\s -> s { _names = M.empty, _traitsNew = Nothing })
     let src = unlines (map (show . pretty) $ M.elems traits) ++ "\n" ++ show (pretty tlm)
-    liftIO $ putStrLn ("Getting sat from REST...tlm: " ++ src)
+    liftIO $ putStrLn ("Getting sat from REST...tlm: \n" ++ src)
     ans <- liftIO $ askDafny (Local "/home/zhangz/xwidl/dafny/Binaries") src
     case ans of
         Right ret -> do
@@ -299,7 +319,9 @@ compileExpr (JInterface i) = DVal . DVar <$> compileLVar (LInterface i)
 compileExpr (JCall lvar fn@(Name f) es) = do
     op <- lookupOperationWithLvar fn lvar
     ifM (hasCallbackArgs op)
-        (compileCallWithCbs lvar op es)
+        (do
+            compileCallWithCbs lvar op es
+            return (DVal (DPrim (PInt 0))))
         (do
             x <- compileLVar lvar
             DCall x f <$> mapM compileExpr es)
@@ -315,61 +337,62 @@ compileExpr (JNew i args) = do
     return (DCall v cons_name args')
 
 hasCallbackArgs :: Operation -> Session Bool
-hasCallbackArgs op = or <$> mapM (\(Argument _ ty _) -> isCbTy ty) (_imArgs op)
+hasCallbackArgs op = or <$> mapM (\(Argument _ ty _) -> isJust <$> lookupCbTy ty) (_imArgs op)
 
 compileCallWithCbs lvar op es = do
     let fname = (unName $ _imName op)
     iname <- lvarToIfaceName lvar
     (es', cbs) <- foldM (\(es, cbs) (e, Argument argn argty _)-> do
-                            isCb <- isCbTy argty
-                            if isCb
-                                then do
-                                    cbspec <- queryCallbackSpec op argn
-                                    return (es, cbs ++ [(e, cbspec, argty)])
-                                else return (es ++ [e], cbs))
+                            mCb <- lookupCbTy argty
+                            case mCb of
+                                Just cb -> do
+                                    let cbspec = queryCallbackSpec op argn
+                                    return (es, cbs ++ [(e, cbspec, cb)])
+                                Nothing -> return (es ++ [e], cbs))
                         ([], [])
                         (zip es (_imArgs op))
-    replies <- forM cbs $ \(JEClos n, e, argty) -> do
+    cbmReplies <- forM cbs $ \(JEClos n, CallbackSpec _ reqe withEs, cb) -> do
         -- first emit a method checking if this control-flow can go
-
-        modifyMethod (unName iname) fname (andRequires e)
+        modifyMethod (unName iname) fname (andRequires reqe)
         f <- fresh
         (tlm, _) <- withTarget ("Main_" ++ f) $ do
             x <- compileLVar lvar
             de <- DCall x fname <$> mapM compileExpr es'
             fx <- fresh
             addStmt (SVarDef fx de)
-        ifM (reportToBool <$> getSat tlm)
-            (do
-                replies <- forM es' $ \e' -> do
-                            e'' <- compileExpr e'
-                            inferType e' >>= \case
-                                JTyObj iname -> do
-                                    (r, vname) <- allocOnHeap iname
-                                    addStmt (SVarDef vname e'')
-                                    return (Sat (Just r))
-                                JTyPrim pty -> do
-                                        domainMap <- _pDomains <$> get
-                                        let Just domains = M.lookup pty domainMap
-                                        replies <- forM domains $ \(JAssert name je) -> do
-                                            je' <- compileExpr je
-                                            let x = DVal (DVar (unName name))
-                                            modifyMethod (unName iname) fname
-                                                         ( letBindRequires (unName name) e''
-                                                         . andRequires (prettyShow je'))
-                                            f <- fresh
-                                            (tlm, _) <- withTarget ("Main_" ++ f) $ do
-                                                x <- compileLVar lvar
-                                                de <- DCall x fname <$> mapM compileExpr es'
-                                                fx <- fresh
-                                                addStmt (SVarDef fx de)
-                                            reportToReply <$> getSat tlm
-                                        return (ReplyCallback replies)
-                return (Just replies))
-            (return Nothing)
-    -- we should collect replies here and send back
-    x <- compileLVar lvar
-    DCall x fname <$> mapM compileExpr es'
+        eReport <- getSat tlm
+        if reportToBool eReport
+            then do -- if can go
+                    let cbArgtys = map (\(Argument _ ty _) -> iTypeToJsType ty) (_cArgs cb)
+                    replies <- forM (zip withEs cbArgtys) $ \(withE, argty) -> case argty of
+                                    JTyObj iname -> do
+                                        (r, vname) <- allocOnHeap iname
+                                        addStmt (SVarDef vname (DStrRepr withE))
+                                        return (Sat (Just r))
+                                    JTyPrim pty -> do
+                                            domainMap <- _pDomains <$> get
+                                            let Just domains = M.lookup pty domainMap
+                                            let assertions = domainsToAssertions domains
+                                            (_, flags) <- head <$> flip filterM assertions
+                                                                (\(JAssert name je, _) -> do
+                                                                        je' <- compileExpr je
+                                                                        let x = DVal (DVar (unName name))
+                                                                        modifyMethod (unName iname) fname
+                                                                                     ( letBindRequires (unName name) (DStrRepr withE)
+                                                                                     . andRequires (prettyShow je'))
+                                                                        f <- fresh
+                                                                        (tlm, _) <- withTarget ("Main_" ++ f) $ do
+                                                                            x <- compileLVar lvar
+                                                                            de <- DCall x fname <$> mapM compileExpr es'
+                                                                            fx <- fresh
+                                                                            addStmt (SVarDef fx de)
+                                                                        reportToBool <$> getSat tlm)
+                                            return (Replies pty flags)
+
+                    return (Just (reportToReply eReport, replies))
+            else return Nothing -- if can't
+
+    reply (ReplyCallback cbmReplies)
 
 andRequires :: String -> TraitMemberMethod -> TraitMemberMethod
 andRequires r m = modifyRequires m (\case
@@ -382,13 +405,13 @@ letBindRequires x e m = modifyRequires m (fmap (\s -> "var " ++ x ++ " := " ++ p
 modifyRequires :: TraitMemberMethod -> (Maybe String -> Maybe String) -> TraitMemberMethod
 modifyRequires m f = m { _tmRequires = f (_tmRequires m) }
 
-isCbTy :: Type -> Session Bool
-isCbTy (TyInterface n) = do
+lookupCbTy :: Type -> Session (Maybe Callback)
+lookupCbTy (TyInterface n) = do
     cbs <- _cbs . _spec <$> get
     case M.lookup n cbs of
-        Nothing -> return False
-        Just _  -> return True
-isCbTy _ = return False
+        Nothing -> return Nothing
+        Just cb -> return (Just cb)
+lookupCbTy _ = return Nothing
 
 modifyMethod :: String -> String -> (TraitMemberMethod -> TraitMemberMethod) -> Session ()
 modifyMethod tname fname f = do
@@ -405,11 +428,8 @@ modifyTrait x f = do
         Just t -> modify (\s -> s { _traitsNew = Just (M.insert x (f t) traits)})
         Nothing -> return ()
 
-queryCallbackSpec :: Operation -> Name -> Session String
-queryCallbackSpec op x =
-    case filter (\(CallbackSpec x' _ _) -> x' == x) (_imCbs op) of
-        (CallbackSpec _ s _):[] -> return s
-        _ -> error "queryCallbackSpec failed"
+queryCallbackSpec :: Operation -> Name -> CallbackSpec
+queryCallbackSpec op x = head $ filter (\(CallbackSpec x' _ _) -> x' == x) (_imCbs op)
 
 lvarToIfaceName = \case
     LInterface iname -> return iname

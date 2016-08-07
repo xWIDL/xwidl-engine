@@ -49,7 +49,11 @@ data Dictionary = Dictionary {
   _dmembers :: [DictionaryMember]
 } deriving Show
 
-data Callback = Callback Name (Maybe Type) [Argument] deriving Show
+data Callback = Callback {
+  _cName :: Name,
+  _cRetTy :: Maybe Type,
+  _cArgs :: [Argument]
+} deriving Show
 
 data DictionaryMember = DictionaryMember Type Name (Maybe W.Default) deriving Show
 
