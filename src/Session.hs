@@ -203,14 +203,15 @@ handlePrimEval pty e = do
 domainsToAssertions :: [JAssert] -> [(JAssert, [Bool])]
 domainsToAssertions domAsses =
     let (JAssert x _) = head domAsses
+        es      = map (\(JAssert _ e) -> e) domAsses
         conj es = JAssert x (conj' es)
-        es            = map (\(JAssert _ e) -> e) domAsses
     in  map (\bm -> (conj $ map fst $ filter snd (zip es bm), bm)) (f (length es))
     where
         f 0 = []
-        f 1 = [[True], [False]]
+        f 1 = [[False], [True]]
         f n = let bms = f (n - 1)
-              in  map (True:) bms ++ map (False:) bms
+              in  map (False:) bms ++ map (True:) bms
+        conj' [] = JVal (JVPrim (PBool False))
         conj' (e:[]) = e
         conj' (e:es) = JRel Or e (conj' es)
 
