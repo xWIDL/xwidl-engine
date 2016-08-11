@@ -11,94 +11,86 @@ data Spec = Spec {
     _dicts      :: M.Map Name Dictionary,
     _exceptions :: M.Map Name Exception,
     _cbs        :: M.Map Name Callback
-} deriving Show
+} deriving (Eq, Show)
 
 data Definition = DefInterface Interface
                 | DefDictionary Dictionary
                 | DefException Exception
-                -- | DefEnum Enum
                 | DefCallback Callback
-                deriving Show
+                deriving (Eq, Show)
 
-{-
-    We will mimick Language.WebIDL.AST's naming, but
-    customize AST in following aspects:
-
-    - Combine the partial and typedef into other definitions
-    - Instantiate inheritance
-    - Ignore `implements` for now
-    - Analyze the comments to get parsed annotations
-    - Specialize the hanlding of `Constructor` extended attribute
-    - Rewrite/Simplify the type structure
--}
+data InterfaceConstructors = InterfaceConstructors [InterfaceConstructor]
+                           | InterfaceHTMLConstructor
+                           deriving (Eq, Show)
 
 data Interface = Interface {
     _iName :: Name,
     _iInherit :: Maybe Name,
-    _constructors :: [InterfaceConstructor],
-    _attrs :: M.Map Name Type,
-    _ghostAttrs :: M.Map Name Type,
+    _constructors :: InterfaceConstructors,
+    _attrs :: M.Map Name IType,
+    _ghostAttrs :: M.Map Name IType,
     _operations :: M.Map Name Operation
-} deriving Show
+} deriving (Eq, Show)
 
 data Dictionary = Dictionary {
   _dname :: Name,
   _dInherit :: Maybe Name,
   _dmembers :: [DictionaryMember]
-} deriving Show
+} deriving (Eq, Show)
 
 data Callback = Callback {
   _cName :: Name,
-  _cRetTy :: Maybe Type,
+  _cRetTy :: Maybe IType,
   _cArgs :: [Argument]
-} deriving Show
+} deriving (Show, Eq)
 
-data DictionaryMember = DictionaryMember Type Name (Maybe W.Default) deriving Show
+data DictionaryMember = DictionaryMember IType Name (Maybe W.Default) deriving (Eq, Show)
 
 data Exception = Exception {
   _eName    :: Name,
   _eInherit :: Maybe Name,
   _emembers :: [ExceptionMember]
-} deriving Show
+} deriving (Eq, Show)
 
 data ExceptionMember = ExConst Const
-                     | ExField Type Name
-                     deriving Show
+                     | ExField IType Name
+                     deriving (Eq, Show)
 
-data Const = Const Type Name W.ConstValue deriving Show
-
--- data Enum = Enum Name [String] deriving Show
+data Const = Const IType Name W.ConstValue deriving (Eq, Show)
 
 data Operation = Operation {
     _imName :: Name,
     _imArgs :: [Argument],
-    _imRet  :: Maybe Type,
+    _imOptArgs :: [Argument],
+    _imRet  :: Maybe IType,
     _imEnsures :: Maybe String,
     _imRequires :: Maybe String,
     _imCbs :: [CallbackSpec]
-    -- _imEffects :: Maybe String -- TODO
-} deriving Show
+} deriving (Eq, Show)
 
-data CallbackSpec = CallbackSpec Name String [String] deriving Show
+data CallbackSpec = CallbackSpec Name String [String] deriving (Eq, Show)
 
 data Argument = Argument {
-  _argName :: Name,
-  _argTy :: Type,
+  _argName   :: Name,
+  _argTy     :: IType_,
   _argOptDef :: Maybe W.Default
-} deriving Show
+} deriving (Eq, Show)
 
 data InterfaceConstructor = InterfaceConstructor {
     _icArgs :: [Argument],
+    _icOptArgs :: [Argument],
     _icEnsures :: Maybe String,
     _icRequires :: Maybe String
-} deriving Show
+} deriving (Eq, Show)
 
-data Type = TyInterface Name
-          | TyDOMString
-          | TyNullable Type
-          | TyInt | TyFloat | TyAny
-          | TyBoolean | TyObject
-          | TyBuiltIn Name
-          | TyArray Type
-          | TyUnion [Type]
-          deriving (Eq, Show)
+data IType = TyInterface Name
+           | TyNullable IType
+           | TyBuiltIn Name
+           | TyAny | TyObject
+           | TyBoolean | TyInt | TyFloat | TyDOMString
+           | TyArray IType
+           deriving (Eq, Show)
+
+data IType_ = ITyUnion [IType]
+            | ITySingle IType
+            deriving (Eq, Show)

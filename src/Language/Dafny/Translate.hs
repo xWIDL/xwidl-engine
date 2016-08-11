@@ -1,19 +1,24 @@
 -- Translation from xIWDL spec to Dafny traits
 {-# LANGUAGE TupleSections #-}
 
-module Language.Dafny.Translate (translateSpec) where
+module Language.Dafny.Translate (
+    translateSpec, getADTConsName, getUnionIfaceName,
+    iTypeToDyType
+) where
 
 import Language.XWIDL.Spec
 import Language.Dafny.AST
 import Language.JS.Type
+import Data.String.Utils
 
 import qualified Data.Map as M
 
 import Control.Monad (filterM)
-import Control.Monad.Reader
-import Control.Monad.Except
+import Control.Monad.Reader hiding (join)
+import Control.Monad.Except hiding (join)
 
 -- Interface translation
+-- THIS IS BULL SHIT, we should use a datatype writer 
 type Trans = ReaderT Spec (Except String)
 
 translateSpec :: Spec -> Either String (M.Map String Trait)
@@ -26,11 +31,14 @@ translateSpec s@(Spec ifaces dicts _ _) =
 
 translateIface :: Interface -> Trans (String, Trait)
 translateIface (Interface iname mInherit constructors _attrs gAttrs operations) = do
-    let contrs = M.fromList $ map (translateConstructor iname) (zip [0..] constructors)
-    tms <- mapM translateMethod $ M.elems operations
+    contrs <- case constructors of
+                InterfaceConstructors conss -> M.fromList <$> mapM (translateConstructor iname) (zip [0..] conss)
+                InterfaceHTMLConstructor -> return $ M.singleton "new_def" defConstructor
+    tms <- concat <$> mapM translateMethod (M.elems operations)
     let tmsMap = M.fromList $ map (\t -> (_tmName t, t)) tms
     let methods = contrs `M.union` tmsMap
-    let attrs = M.fromList (map (\(x, ty) -> (unName x, (unName x, iTypeToDyType ty))) $ M.toList gAttrs)
+    let attrs = M.fromList $ map (\(x, ty) -> (unName x, (unName x, iTypeToDyType ty)))
+                                 (M.toList gAttrs)
     let tname = unName iname
     case mInherit of
         Just parent -> do
@@ -42,20 +50,29 @@ translateIface (Interface iname mInherit constructors _attrs gAttrs operations) 
                 Nothing -> throwError $ "Invalid inheritance: " ++ show parent
         Nothing ->
             return (tname, Trait tname attrs methods)
+    where
+        defConstructor = TraitMemberMethod {
+            _tmName = "new_def",
+            _tmArgs = [],
+            _tmRet = Just ("ret", DTyClass (unName iname)),
+            _tmEnsures = Nothing, -- XXX: maybe ret != null?
+            _tmRequires = Nothing
+        }
 
 translateDict :: Dictionary -> Trans (String, Trait)
 translateDict (Dictionary dname mInherit dmembers) = do
-    let attrs = M.fromList (map (\(DictionaryMember ty x _) ->
-                                  (unName x, (unName x, iTypeToDyType ty))) dmembers)
+    let attrs = M.fromList $ map (\(DictionaryMember ty x _) ->
+                                        (unName x, (unName x, iTypeToDyType ty)))
+                                 dmembers
+
     let tname = unName dname
     -- constructor
     let cons = TraitMemberMethod {
                     _tmName = "new",
-                    _tmArgs = [],
+                    _tmArgs = M.elems attrs,
                     _tmRet  = Just ("ret", DTyClass (unName dname)),
                     _tmEnsures = Nothing,
                     _tmRequires = Nothing
-                    -- _tmImpl = Nothing
                 }
     let methods = M.singleton "new" cons
     case mInherit of
@@ -69,40 +86,62 @@ translateDict (Dictionary dname mInherit dmembers) = do
         Nothing ->
             return (tname, Trait tname attrs methods)
 
-translateConstructor :: Name -> (Int, InterfaceConstructor) -> (String, TraitMemberMethod)
-translateConstructor iname (idx, InterfaceConstructor{..}) = (tmName, tmm)
-    where
-        tmName = "new_" ++ show idx
-        tmm = TraitMemberMethod {
+translateConstructor :: Name -> (Int, InterfaceConstructor) -> Trans (String, TraitMemberMethod)
+translateConstructor iname (idx, InterfaceConstructor{..}) = do
+    args <- mapM (\(Argument x ity _) -> (unName x,) <$> iType_ToDyType ity) _icArgs    
+    let tmName = "new_" ++ show idx
+    let tmm = TraitMemberMethod {
             _tmName = tmName,
-            _tmArgs = map (\(Argument x ity _) -> (unName x, iTypeToDyType ity)) _icArgs,
+            _tmArgs = args,
             _tmRet  = Just ("ret", DTyClass (unName iname)),
             _tmEnsures = _icEnsures,
             _tmRequires = _icRequires
-            -- _tmImpl = Nothing
+    }
+    return (tmName, tmm)
+
+translateMethod :: Operation -> Trans [TraitMemberMethod]
+translateMethod Operation{..} = do
+    args <- filterM (notCb . _argTy) _imArgs
+    optargs <- filterM (notCb . _argTy) _imOptArgs
+    let argss = mapArg iTypeToDyType args
+    let optargss = mapArg (DTyOpt . iTypeToDyType) optargs
+    let argss = argss ++ optargss
+    let retty = fmap (\ty -> ("eret", iTypeToDyType ty)) _imRet
+    forM (merge argss) $ \args'' -> do
+        return TraitMemberMethod {
+            _tmName = unName _imName,
+            _tmArgs = zip (fst args'') (snd args''),
+            _tmRet  = retty,
+            _tmEnsures = _imEnsures,
+            _tmRequires = _imRequires
         }
 
-translateMethod :: Operation -> Trans TraitMemberMethod
-translateMethod Operation{..} = do
-    args <- filterM notCb _imArgs
-    return TraitMemberMethod {
-        _tmName = unName _imName,
-        _tmArgs = map (\(Argument x ity _) -> (unName x, iTypeToDyType ity)) args,
-        _tmRet  = (("ret",) . iTypeToDyType) <$> _imRet,
-        _tmEnsures = _imEnsures,
-        _tmRequires = _imRequires
-        -- _tmImpl = _imEffects
-    }
+mapArg :: (IType -> DyType) -> [Argument] -> [[(String, DyType)]]
+mapArg f args = map (\(Argument name ty _) ->
+                        case ty of
+                            ITySingle ty' -> [(unName name, f ty')]
+                            ITyUnion tys  -> map (\ty' -> (unName name, f ty')) tys)
+                    args
 
-notCb :: Argument -> Trans Bool
-notCb (Argument _ (TyInterface n) _) = do
+merge :: [[(String, DyType)]] -> [([String], [DyType])]
+merge [] = []
+merge [choices] = map (\(val, ty) -> ([val], [ty])) choices
+merge (choices:args) = concatMap (\(val, ty) -> map (\(vals, tys) -> (val : vals, ty: tys)) (merge args)) choices
+
+notCb :: IType_ -> Trans Bool
+notCb (ITySingle (TyInterface n)) = do
     cbs <- _cbs <$> ask
     case M.lookup n cbs of
         Nothing -> return True
         Just _  -> return False
 notCb _ = return True
 
-iTypeToDyType :: Type -> DyType
+iType_ToDyType :: IType_ -> Trans DyType
+iType_ToDyType = \case
+    ITyUnion tys  -> makeDatatype tys
+    ITySingle ty -> return $ iTypeToDyType ty
+
+iTypeToDyType :: IType -> DyType
 iTypeToDyType = \case
     TyInterface x -> DTyClass (unName x)
     TyDOMString   -> DTyString
@@ -110,3 +149,21 @@ iTypeToDyType = \case
     TyInt -> DTyInt
     TyFloat -> DTyReal
     ty -> error $ "Can't translate Type: " ++ show ty
+
+makeDatatype :: [IType] -> Trans DyType
+makeDatatype tys = do
+    let tyName = join "Or" (map show tys)
+    let tys' = map iTypeToDyType tys
+    case lookupDatatype tyName of
+        Nothing -> registerDatatype tyName (map (\ty -> (tyName ++ "_as_" ++ show ty, ty)) tys')
+        Just _ -> return (DTyADT tyName)
+
+registerDatatype :: String -> [(String, DyType)] -> Trans DyType
+registerDatatype = undefined
+
+getUnionIfaceName :: [IType] -> Name
+getUnionIfaceName = undefined
+
+lookupDatatype = undefined
+
+getADTConsName = undefined

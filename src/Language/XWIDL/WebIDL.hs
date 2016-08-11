@@ -12,12 +12,13 @@ import Control.Monad.State
 import Control.Monad.Except
 import qualified Data.Map as M
 import Data.Maybe (listToMaybe, fromMaybe)
+import Data.Either (partitionEithers)
 import Data.String.Utils
 
 data TransState = TransState {
     _emitted :: M.Map Name Definition,
     _focus   :: Definition,
-    _typemap :: M.Map Name Type
+    _typemap :: M.Map Name IType_
 }
 
 -- Interface translation
@@ -39,7 +40,7 @@ transDefsToSpec defs = do
             _typemap = M.empty
         }
         dummyName = Name ""
-        dummyDef = DefInterface (Interface dummyName Nothing [] M.empty M.empty M.empty)
+        dummyDef = DefInterface (Interface dummyName Nothing (InterfaceConstructors []) M.empty M.empty M.empty)
         distribute (x, DefInterface i) s = s { _ifaces = M.insert x i (_ifaces s) }
         distribute (x, DefDictionary d) s = s { _dicts = M.insert x d (_dicts s) }
         distribute (x, DefException e) s = s { _exceptions = M.insert x e (_exceptions s) }
@@ -62,7 +63,7 @@ transDef = \case
 transCallback :: W.Callback Tag -> Trans ()
 transCallback (W.Callback _ i retty args) = do
     retty' <- transRet retty
-    args' <- mapM transArg args
+    (args', _) <- partitionEithers <$> mapM transArg args -- XXX: opt args
     replaceFocus $ DefCallback (Callback (i2n i) retty' args')
 
 transIface :: W.Interface Tag -> Trans ()
@@ -86,7 +87,9 @@ transIface' i mChangeInherit work = do
         Just _ -> throwError $ "Invalid interface name: " ++ show i
         Nothing -> do
             replaceFocus (DefInterface (Interface (i2n i)
-                          (fromMaybe Nothing mChangeInherit) [] M.empty M.empty M.empty))
+                                                  (fromMaybe Nothing mChangeInherit)
+                                                  (InterfaceConstructors [])
+                                                  M.empty M.empty M.empty))
             work
 
 transDict :: W.Dictionary Tag -> Trans ()
@@ -118,7 +121,7 @@ transException (W.Exception _ x mInherit members) = do
     mapM_ transExceptionMember members
 
 transEnum :: W.Enum Tag -> Trans ()
-transEnum (W.Enum _ i _) = modify (\s -> s { _typemap = M.insert (i2n i) TyDOMString (_typemap s) })
+transEnum (W.Enum _ i _) = modify (\s -> s { _typemap = M.insert (i2n i) (ITySingle TyDOMString) (_typemap s) })
 
 transTypeDef :: W.Typedef Tag -> Trans ()
 transTypeDef (W.Typedef _ ty i) = do
@@ -129,11 +132,12 @@ transExtAttr :: W.ExtendedAttribute Tag -> Trans ()
 transExtAttr = \case
     W.ExtendedAttributeArgList tag (W.Ident "Constructor") args -> do
         let (mEns, mReq) = analyzeConsAnn $ _comment tag
-        args' <- mapM transArg args
-        emitConstructor (InterfaceConstructor args' mEns mReq)
+        (args', optArgs') <- partitionEithers <$> mapM transArg args -- XXX: opt args
+        emitConstructor (InterfaceConstructor args' optArgs' mEns mReq)
     W.ExtendedAttributeNoArgs tag (W.Ident "Constructor") -> do
         let (mEns, mReq) = analyzeConsAnn $ _comment tag
-        emitConstructor (InterfaceConstructor [] mEns mReq)
+        emitConstructor (InterfaceConstructor [] [] mEns mReq)
+    W.ExtendedAttributeNoArgs tag (W.Ident "HTMLConstructor") -> emitHTMLConstructor
     _ -> return () -- TODO
 
 transIfaceMember :: W.InterfaceMember Tag -> Trans ()
@@ -145,48 +149,48 @@ transIfaceMember = \case
 transIfaceAttr :: W.Attribute Tag -> Trans ()
 transIfaceAttr (W.Attribute tag _mInheritModifier _mReadOnlyModifer ty x) = do
     inspectAttrComment $ _comment tag
-    ty' <- transType ty
+    ITySingle ty' <- transType ty
     emitAttr ty' (i2n x)
 
 -- If an operation has no identifier, then it must be declared to be a special operation using one of the special keywords.
 transIfaceOp :: W.Operation Tag -> Trans ()
 transIfaceOp (W.Operation tag _extAttrs _mQualifier ret (Just f) args) = do
     (mEns, mReq, cbs) <- analyzeOpAnn $ _comment tag
-    args' <- mapM transArg args
+    (args', optArgs') <- partitionEithers <$> mapM transArg args
     ret' <- transRet ret
-    emitOp $ Operation (i2n f) args' ret' mEns mReq cbs
+    emitOp $ Operation (i2n f) args' optArgs' ret' mEns mReq cbs
 transIfaceOp _ = error "Special operations are not supported yet"
 
 transDictMember :: W.DictionaryMember Tag -> Trans DictionaryMember
 transDictMember (W.DictionaryMember _ ty i mDef) = do
-    ty' <- transType ty
+    ITySingle ty' <- transType ty
     return (DictionaryMember ty' (i2n i) mDef)
 
 transExceptionMember :: W.ExceptionMember Tag -> Trans ExceptionMember
 transExceptionMember = \case
     W.ExConst _ _ -> error "Const is not supported yet" -- TODO
     W.ExField _ ty i -> do
-        ty' <- transType ty
+        ITySingle ty' <- transType ty
         return (ExField ty' (i2n i))
 
-transRet :: W.ReturnType -> Trans (Maybe Type)
+transRet :: W.ReturnType -> Trans (Maybe IType)
 transRet = \case
-    W.RetType ty -> Just <$> transType ty
+    W.RetType ty -> transType ty >>= (\(ITySingle ty) -> return (Just ty))
     W.RetVoid    -> return Nothing
 
-transType :: W.Type -> Trans Type
+transType :: W.Type -> Trans IType_
 transType = \case
-    W.TySingleType singleTy -> transSingleType singleTy
+    W.TySingleType singleTy -> ITySingle <$> transSingleType singleTy
     W.TyUnionType unionTy tySuffix -> do
-        ty <- transUnionType unionTy
-        return (applyTySuffix tySuffix ty)
+        tys <- transUnionType unionTy
+        return $ ITyUnion (map (applyTySuffix tySuffix) tys)
 
-transSingleType :: W.SingleType -> Trans Type
+transSingleType :: W.SingleType -> Trans IType
 transSingleType = \case
     W.STyNonAny nonAny -> transNonAnyType nonAny
     W.STyAny suffix -> return (applyTySuffix suffix TyAny)
 
-transNonAnyType :: W.NonAnyType -> Trans Type
+transNonAnyType :: W.NonAnyType -> Trans IType
 transNonAnyType = \case
     W.TyPrim primTy suffix -> applyTySuffix suffix <$> transPrimType primTy
     W.TyDOMString suffix -> return (applyTySuffix suffix TyDOMString)
@@ -194,31 +198,32 @@ transNonAnyType = \case
         let name = i2n i
         tymap <- _typemap <$> get
         case M.lookup name tymap of
-            Just ty -> return ty
+            Just (ITySingle ty) -> return ty
+            Just _ -> error "tyindent union"
             Nothing -> return $ applyTySuffix suffix (TyInterface name)
     W.TySequence ty mNull -> do
-        ty' <- transType ty
+        ITySingle ty' <- transType ty
         case mNull of
             Just W.Null -> return (TyNullable ty')
             Nothing   -> return ty'
     W.TyObject suffix -> return (applyTySuffix suffix TyObject)
     W.TyDate suffix -> return (applyTySuffix suffix $ TyBuiltIn (Name "Date"))
 
-applyTySuffix ::  W.TypeSuffix -> Type -> Type
+applyTySuffix ::  W.TypeSuffix -> IType -> IType
 applyTySuffix W.TypeSuffixArray ty = TyArray ty
 applyTySuffix W.TypeSuffixNullable ty = TyNullable ty
 applyTySuffix W.TypeSuffixNone ty = ty
 
-transUnionType :: W.UnionType -> Trans Type
-transUnionType tys = TyUnion <$> mapM transUMType tys
+transUnionType :: W.UnionType -> Trans [IType]
+transUnionType tys = mapM transUMType tys
 
-transUMType :: W.UnionMemberType -> Trans Type
+transUMType :: W.UnionMemberType -> Trans IType
 transUMType = \case
-    W.UnionTy ut suffix -> applyTySuffix suffix <$> transUnionType ut
+    W.UnionTy ut suffix -> error "union in union" -- applyTySuffix suffix <$> transUnionType ut
     W.UnionTyNonAny nonAny -> transNonAnyType nonAny
     W.UnionTyAny suffix -> return (applyTySuffix suffix TyAny)
 
-transPrimType :: W.PrimitiveType -> Trans Type
+transPrimType :: W.PrimitiveType -> Trans IType
 transPrimType = \case
     W.PrimIntegerType _ -> return TyInt
     W.PrimFloatType _   -> return TyFloat
@@ -226,14 +231,14 @@ transPrimType = \case
     W.Byte              -> return (TyBuiltIn $ Name "Byte")
     W.Octet             -> return (TyBuiltIn $ Name "Octet")
 
-transArg :: W.Argument Tag -> Trans Argument
+transArg :: W.Argument Tag -> Trans (Either Argument Argument)
 transArg = \case
     W.ArgOptional _extAttrs ty (W.ArgIdent x) mDefault -> do
         ty' <- transType ty
-        return $ Argument (i2n x) ty' mDefault
+        return $ Left (Argument (i2n x) ty' mDefault)
     W.ArgNonOpt _extAttrs ty _mEllipsis (W.ArgIdent x) -> do
         ty' <- transType ty
-        return $ Argument (i2n x) ty' Nothing
+        return $ Right (Argument (i2n x) ty' Nothing)
     _ -> error "ArgKey is not supported yet"
 
 inspectAttrComment :: [String] -> Trans ()
@@ -244,13 +249,13 @@ inspectAttrComment = mapM_ collectGhostAttr .
             let attrStr = strip $ drop 8 (strip s)
             case tryParse pAttribute attrStr of
                 Right (W.Attribute _ _mInheritModifier _mReadOnlyModifer ty x) -> do
-                    ty' <- transType ty
+                    ITySingle ty' <- transType ty
                     emitGhostAttr ty' (i2n x)
                 Left err -> throwError $ "Parse ghost attribute error: " ++ show err
         isGhostAttrComment  = startswith "/- ghost" . strip
 
 analyzeConsAnn :: [String] -> (Maybe String, Maybe String)
-analyzeConsAnn lines = let (e, r, _) = analyzeFunAnn lines in (e, r)
+analyzeConsAnn lns = let (e, r, _) = analyzeFunAnn lns in (e, r)
 
 analyzeFunAnn :: [String] -> (Maybe String, Maybe String, [CallbackSpec])
 analyzeFunAnn blocks =
@@ -277,13 +282,13 @@ analyzeOpAnn blocks = do
     inspectAttrComment blocks
     return $ analyzeFunAnn blocks
 
-emitAttr :: Type -> Name -> Trans ()
+emitAttr :: IType -> Name -> Trans ()
 emitAttr ty x =
     modify (\s -> let DefInterface iface = (_focus s)
                       focus' = iface { _attrs = M.insert x ty (_attrs iface) }
                   in  s { _focus = DefInterface focus' })
 
-emitGhostAttr :: Type -> Name -> Trans ()
+emitGhostAttr :: IType -> Name -> Trans ()
 emitGhostAttr ty x =
     modify (\s -> let DefInterface iface = (_focus s)
                       focus' = iface { _ghostAttrs = M.insert x ty (_ghostAttrs iface) }
@@ -292,8 +297,17 @@ emitGhostAttr ty x =
 emitConstructor :: InterfaceConstructor -> Trans ()
 emitConstructor cons =
     modify (\s -> let DefInterface iface = (_focus s)
-                      focus' = iface { _constructors = cons : _constructors iface }
+                      InterfaceConstructors conss = _constructors iface
+                      focus' = iface { _constructors = InterfaceConstructors (cons : conss) }
                   in  s { _focus = DefInterface focus' })
+
+emitHTMLConstructor :: Trans ()
+emitHTMLConstructor =
+    modify (\s -> let DefInterface iface = (_focus s) in
+                    case _constructors iface of
+                        InterfaceConstructors [] -> 
+                            s { _focus = DefInterface (iface { _constructors = InterfaceHTMLConstructor }) }
+                        _ -> error "Illegal constructor")
 
 emitOp :: Operation -> Trans ()
 emitOp op =

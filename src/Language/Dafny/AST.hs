@@ -19,12 +19,8 @@ data TraitMemberMethod = TraitMemberMethod {
     _tmName :: String,
     _tmArgs :: [(String, DyType)],
     _tmRet  :: Maybe (String, DyType),
-    -- from xWIDL
     _tmEnsures :: Maybe String,
-    -- from xWIDL
     _tmRequires :: Maybe String
-    -- from xWIDL
-    -- _tmImpl :: Maybe String
 } deriving (Show)
 
 data TopLevelMethod = TopLevelMethod {
@@ -42,9 +38,12 @@ data DyVal = DVar String
 
 data DyExpr = DVal DyVal
             | DCall String String [DyExpr]
+            | DApp String [DyExpr]
             | DAccess String String
             | DRel RelBiOp DyExpr DyExpr
             | DStrRepr String
+            | DSome DyExpr
+            | DNone
             deriving (Show)
 
 data Stmt = SVarDecl String DyType -- var x : <type>;
@@ -59,6 +58,9 @@ data DyType = DTyClass String
             | DTyInt
             | DTyBool
             | DTyReal
+            | DTyOpt DyType
+            -- | DTyUnion [DyType]
+            | DTyADT String
             deriving (Show)
 
 -- Pretty print
@@ -84,7 +86,6 @@ instance Pretty TraitMemberMethod where
         prettyMaybe mRet (\ret -> text "returns" <+> parens (prettySig ret)) <> line <>
         prettyMaybe requires (\req -> indent 4 (text "requires" <+> text req <> line)) <>
         prettyMaybe ensures (\ens -> (text "ensures" <+> text ens <> line))-- <>
-        -- prettyMaybe impl (\imp -> line <> text imp <> line)
 
 prettySig :: (String, DyType) -> Doc
 prettySig (x, ty) = text x <> text ":" <+> pretty ty
@@ -98,11 +99,13 @@ instance Pretty DyType where
     pretty DTyInt = text "int"
     pretty DTyBool = text "bool"
     pretty DTyReal = text "real"
+    pretty (DTyOpt t) = text "Option<" <> pretty t <> text ">"
 
 instance Pretty DyExpr where
     pretty (DVal v) = pretty v
     pretty (DCall x f args) = text x <> text "." <> text f <>
                               parens (hcat (punctuate (comma <> space) (map pretty args)))
+    pretty (DApp f args) = text f <> parens (hcat (punctuate (comma <> space) (map pretty args)))
     pretty (DAccess x attr) = text (x ++ "." ++ attr)
     pretty (DRel op a b) = pretty a <+> pretty op <+> pretty b
     pretty (DStrRepr s) = text s
@@ -110,8 +113,6 @@ instance Pretty DyExpr where
 instance Pretty DyVal where
     pretty (DVar x) = text x
     pretty (DPrim p) = pretty p
-    -- pretty (DSeq es) = text "[" <> (hcat (punctuate (comma <> space) (map pretty es))) <> text "]"
-
 
 instance Pretty RelBiOp where
     pretty = \case

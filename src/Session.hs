@@ -1,4 +1,4 @@
-module Session (run, andRequires) where
+module Session (run) where
 
 import Language.Dafny.Translate
 import Language.Dafny.AST
@@ -6,108 +6,77 @@ import Language.Dafny.Request
 import Language.Dafny.Analyze
 
 import Language.XWIDL.Spec
+import Language.XWIDL.WebIDL
+import Language.WebIDL.Parser
 
 import Language.JS.Type
 import Language.JS.Platform
 
 import Model
+import State
+import Util
 
 import Control.Monad.State
 import Control.Monad (forM_)
+import Control.Monad.Trans.Except
 
 import qualified Data.Map as M
 import Data.Maybe (fromJust, isJust)
 import Data.Char (toLower)
 import Data.Atomics.Counter
 import Data.Aeson
+import Data.Either (partitionEithers)
 
 import qualified Data.ByteString.Lazy as BSL
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BC
 
-import Text.PrettyPrint.Leijen (pretty)
-
-import Network.Simple.TCP
-import Network.Socket (socketToHandle)
-
 import System.IO
+import Text.PrettyPrint.Leijen (pretty, Pretty)
 
-data SessionState = SessionState {
-    -- Abstract heap
-    _heap :: Heap,
-    -- Top-level methods
-    _tlms :: M.Map String TopLevelMethod,
-    -- Current compilation target
-    _target :: String,
-    -- Original spec
-    _spec :: Spec,
-    -- Socket handle
-    _handler :: Handle,
-    -- Session number
-    _snum :: Int,
-    -- Traits text
-    _traits :: M.Map String Trait,
-    -- New traits, which will be used as part of code emission if avaiable
-    _traitsNew :: Maybe (M.Map String Trait),
-    -- Primitive type domains
-    _pDomains :: M.Map PrimType [JAssert],
-    -- unique namer
-    _namer :: Namer,
-    -- name table
-    _names :: M.Map Name String
-}
+startServe = undefined
 
-type Session = StateT SessionState IO
+run :: IO ()
+run = do
+    counter <- newCounter 0
+    hSetBuffering stdout NoBuffering
+    logging "Engine launched, waiting for connection"
+    startServe $ \handler -> do
+        hSetBuffering handler NoBuffering
 
-run :: Spec -> IO ()
-run spec =
-    case translateSpec spec of
-        Left e -> putStrLn $ "Translation of spec failed: " ++ e
-        Right traits -> do
-            putStrLn "// ------ traits ------- "
-            mapM_ (print . pretty) traits
-            counter <- newCounter 0
-            hSetBuffering stdout NoBuffering
-            putStrLn "Engine launched, waiting for connection"
-            serve (Host "localhost") "8888" $ \(sock, addr) -> do
-                snum <- incrCounter 1 counter
-                putStrLn $ "Creating session #" ++ show snum
-                putStrLn $ "TCP connection established from " ++ show addr
-                handler <- socketToHandle sock ReadWriteMode
-                hSetBuffering handler NoBuffering
-                Just (Domains m) <- eGetLine handler
-                putStrLn $ "Get domains: " ++ show m
-                evalStateT loop (SessionState {
-                    _heap = initHeap,
-                    _tlms = M.empty,
-                    _target = "",
-                    _spec = spec,
-                    _handler = handler,
-                    _snum = snum,
-                    _traits = traits,
-                    _traitsNew = Nothing,
-                    _pDomains = M.fromList m,
-                    _namer = initNamer,
-                    _names = M.empty
-                })
-                putStrLn $ "Ending session #" ++ show snum
+        snum <- incrCounter 1 counter
+        logging $ "Creating session #" ++ show snum
+        
+        Just (CBoot (Domains m) idl) <- eGetLine handler
+        preludeIDL <- readFile "prelude.idl"
+        logging $ "Get domains: " ++ show m
 
--- Emit code inside named top-level method target
-withTarget :: String -> Session a -> Session (TopLevelMethod, a)
-withTarget newTarget emit = do
-    oldTarget <- _target <$> get
-    modify (\s -> s { _target = newTarget })
-    modify (\s -> s { _tlms = M.insert newTarget initTargetMethod (_tlms s) })
+        case parseIDL (preludeIDL ++ "\n" ++ idl) of
+            Left e -> warning $ "Parse of IDL failde: " ++ show e
+            Right idlAST ->
+                case transDefsToSpec idlAST of
+                    Left e -> warning $ "Translation of IDL failde: " ++ show e
+                    Right spec ->
+                        case translateSpec spec of
+                            Left e -> warning $ "Translation of spec failed: " ++ e
+                            Right traits -> do
+                                putStrLn "// ------ traits ------- "
+                                mapM_ (print . pretty) traits
 
-    a <- emit
-
-    modify (\s -> s { _target = oldTarget })
-
-    tlms <- _tlms <$> get
-    return (fromJust (M.lookup newTarget tlms), a)
+                                evalStateT loop (SessionState {
+                                    _heap = initHeap,
+                                    _tlm  = initTargetMethod,
+                                    _spec = spec,
+                                    _handler = handler,
+                                    _snum = snum,
+                                    _traits = traits,
+                                    _pDomains = M.fromList m,
+                                    _namer = initNamer
+                                })
+                                logging $ "Ending session #" ++ show snum
     where
         initTargetMethod = TopLevelMethod {
-            _tlName = newTarget,
+            _tlName = "Main",
             _tlArgs = M.empty,
             _tlRequires = [],
             _tlBody = []
@@ -116,301 +85,294 @@ withTarget newTarget emit = do
 loop :: Session ()
 loop = do
     handler <- _handler <$> get
-    line <- BSL.fromStrict <$> liftIO (BS.hGetLine handler)
-    mReply <- case (decode line :: Maybe Command) of
-                Just cmd -> do
-                    liftIO $ putStrLn ("// [REQ] " ++ show cmd)
-                    dispatch cmd
-                Nothing  -> do
-                    liftIO $ putStrLn $ "Invalid request: " ++ show line
-                    return Nothing
-    case mReply of
-        Nothing -> return ()
-        Just r -> do
-            liftIO $ BS.hPut handler (BSL.toStrict (encode r) `BC.snoc` '\n')
+    mCmd <- liftIO $ eGetLine handler
+    case mCmd of
+        Just cmd -> do
+            logging $ "> Request " ++ show cmd
+            eErr <- runExceptT (dispatch cmd)
+            case eErr of
+                Right continue | continue     -> loop
+                               | not continue -> return ()
+                Left errMsg -> reply (InvalidReqeust errMsg) >> loop
+        Nothing -> do
+            warning $ "> Invalid request"
+            reply (InvalidReqeust $ show mCmd)
             loop
 
-reply :: Reply -> Session ()
-reply r = (_handler <$> get) >>= \hd -> liftIO (BS.hPut hd (BSL.toStrict (encode r) `BC.snoc` '\n'))
-
-dispatch :: Command -> Session (Maybe Reply)
+-- Return True to hint continuation, return False to terminate session
+dispatch :: Command -> ServeReq Bool
 dispatch = \case
-    CInvoke lvar x args -> Just <$> handleInvoke lvar x args
-    -- CEval e -> Just <$> handleEval e
-    CCall lvar f args -> Just <$> handleCall lvar f args
-    CAssert e -> Just <$> handleAssert e
-    CEnd -> return Nothing
-{-
-    While assert/invoke are *ephemeral* (not really, since ghost states might be affected),
-    eval *could* have persistent effect if some constructive operation is involved, like
-    new expression or other constructive platform methods.
+    CCall lvar f args -> do
+        op <- lookupOperationWithLvar f lvar
+        handleUnionCall lvar (Op op) args
+        return True
+    CGet lvar name -> handleGet lvar name >> return True
+    CSet lvar name val -> handleSet lvar name val >> return True
+    CNew name Nothing -> handleNewDef name >> return True
+    CNew name (Just args) -> handleNewCons name args >> return True
+    CEnd -> return False
+    _ -> reply (InvalidReqeust "Invalid cmd") >> return True
 
-    By introducing a type inferencer, we can know if the JsExpr is of constructive type,
-    if so, some side effects should be performed.
+-- This is a non-trivial featuring, needing the enhancement of Dafny codegen module
+handleSet :: LVar -> Name -> JsVal -> ServeReq ()
+handleSet lvar name val = reply (InvalidReqeust "set is not supported yet")
 
-    p.s. type inferencer could also be useful in the constructor matching as well!
--}
-interpretExpr :: DyExpr -> JsExpr -> Session JsVal
-interpretExpr de je = inferType je >>= \case
-    JTyObj iname -> do
-        (r, vname) <- allocOnHeap iname
-        addStmt (SVarDef vname de)
-        return (JVRef r)
-    JTyPrim prim -> case je of
-        JVal val -> return val
-        -- XXX: This check is not proven to be complete
-        JNew _ _ -> error "Impossible happens"
-        -- XXX: Below overly-approximation might be problematic
-        _ -> return $ JVPrim (defaultPrim prim)
+handleNewDef :: Name -> ServeReq ()
+handleNewDef iname = do
+    jsRetVal <- getJsValResult (DCall (unName iname) "new_def" [])
+                               (TyInterface iname)
+                               (\_ -> error "Unreachable")
+    reply $ Sat (jsRetVal, Nothing)
 
-handleInvoke :: LVar -> Name -> [JsExpr] -> Session Reply
-handleInvoke lvar fname args = do
-    (tlm, _) <- withTarget "Main" $ do
-        v <- compileLVar lvar
-        op <- lookupOperationWithLvar fname lvar
-        let argtys = map _argTy (_imArgs op)
-        args' <- mapM (uncurry compileExpr) (zip args argtys)
-        addStmt (SInvoke v (unName fname) args')
-    reportToReply <$> getSat tlm
+handleNewCons :: Name -> [JsUnionVal] -> ServeReq ()
+handleNewCons iname uvals = do
+    types <- mapM inferJsUnionValType uvals
+    (consName, cons) <- lookupCons iname types
+    handleUnionCall (LInterface iname) (Cons iname (Name consName) cons) uvals
 
-reportToReply :: Report -> Reply
-reportToReply = \case
-    Verified -> Sat Nothing
-    Failed   -> Unsat
+inlineAssCtx :: AssContext
+inlineAssCtx jass = do
+    x <- fresh
+    let je = app jass (Name x)
+    de <- compileExpr je
+    addStmt $ SAssert de
+    getSat
 
-reportToBool :: Report -> Bool
-reportToBool = \case
-    Verified -> True
-    Failed   -> False
-
--- handleEval :: JsExpr -> Session Reply
--- handleEval e = inferType e >>= \case
---     JTyPrim pty -> handlePrimEval pty e
---     JTyObj _    -> handleObjEval e
---     _           -> error "Invalid eval"
-
--- handlePrimEval :: PrimType -> JsExpr -> Session Reply
--- handlePrimEval pty e = do
---     liftIO $ putStrLn "handlePrimEval"
---     domainMap <- _pDomains <$> get
---     let Just domains = M.lookup pty domainMap
---     let assertions = domainsToAssertions domains
---     (_, flags) <- head <$> flip filterM assertions
---                           (\(assert, _) -> do
---                                 (tlm, _) <- withTarget "Main" $ do
---                                     de <- compileExpr e ()
---                                     compileAssert de assert
---                                 reportToBool <$> getSat tlm)
---     return (Replies pty flags)
-
-domainsToAssertions :: [JAssert] -> [(JAssert, [Bool])]
-domainsToAssertions domAsses =
-    let (JAssert x _) = head domAsses
-        es      = map (\(JAssert _ e) -> e) domAsses
-        conj es = JAssert x (conj' es)
-    in  map (\bm -> (conj $ map fst $ filter snd (zip es bm), bm)) (f (length es))
-    where
-        f 0 = []
-        f 1 = [[False], [True]]
-        f n = let bms = f (n - 1)
-              in  map (False:) bms ++ map (True:) bms
-        conj' [] = JVal (JVPrim (PBool False))
-        conj' (e:[]) = e
-        conj' (e:es) = JRel Or e (conj' es)
-
--- handleObjEval :: JsExpr -> Session Reply
--- handleObjEval e = do
---     liftIO $ putStrLn "handleObjEval"
---     (tlm, r) <- withTarget "Main" $ do
---         e' <- compileExpr e
---         JVRef r <- interpretExpr e' e
---         return r
---     report <- getSat tlm
---     case report of
---         Verified -> return (Sat (Just r))
---         Failed -> return Unsat
-
--- compileAssert :: DyExpr -> JAssert -> Session ()
--- compileAssert de (JAssert n@(Name x) e) = do
---     prefix <- fresh
---     let vname = prefix ++ x
---     addName n vname
---     addStmt $ SVarDef vname de
---     e' <- compileExpr e
---     addStmt $ SAssert e'
-
-getSat :: TopLevelMethod -> Session Report
-getSat tlm = do
-    traits <- getTraits
-    modify (\s -> s { _names = M.empty, _traitsNew = Nothing })
-    let src = unlines (map (show . pretty) $ M.elems traits) ++ "\n" ++ show (pretty tlm)
-    liftIO $ putStrLn ("Getting sat from REST...tlm: \n" ++ src)
-    ans <- liftIO $ askDafny (Local "/home/zhangz/xwidl/dafny/Binaries") src
-    case ans of
-        Right ret -> do
-            liftIO $ putStrLn ("Got sat: " ++ show ret)
-            return ret
-        Left err -> error $ "Dafny connection error: " ++ err
-
-getTraits = do
-    tn <- _traitsNew <$> get
-    case tn of
-        Just tn -> return tn
-        Nothing -> _traits <$> get
-
-compileLVar :: LVar -> Session String
-compileLVar = \case
-    LVal v -> case v of
-        JVRef r -> lookupBinding r
-        _ -> error "Unable to process invocation on non-JRef type now"
-    LInterface iname -> getPlatObj iname
-
-handleAssert :: JsExpr -> Session Reply
-handleAssert e = do
-    (tlm, _) <- withTarget "Main" $ do
-        e' <- compileExpr e TyBoolean
-        addStmt (SAssert e')
-    reportToReply <$> getSat tlm
-
-{-
-    JVal  -> DyVal
-    JCall -> DCall
-    JRel  -> DRel
-    JNew  -> DCall
--}
-
-inferType :: JsExpr -> Session JsType
-inferType = \case
-    JVal val -> case val of
-        JVRef r -> do
-            JsObj iname <- lookupObj r
-            return (JTyObj iname)
-        JVPrim prim -> return (JTyPrim $ inferPrimType prim)
-
-    -- JCall lvar f _ -> case lvar of
-    --     LInterface iname -> findIfaceMethodRetTy iname f
-    --     LVal v -> case v of
-    --         JVRef r -> do
-    --             JsObj iname <- lookupObj r
-    --             findIfaceMethodRetTy iname f
-    --         _ -> error "Unable to process invocation on non-JRef type now"
-
-    JAccess lvar attr -> case lvar of
-        LInterface iname -> findIfaceAttrTy iname attr
-        LVal v -> case v of
-            JVRef r -> do
-                JsObj iname <- lookupObj r
-                findIfaceAttrTy iname attr
-            _ -> error "Unable to process access on non-JRef type now"
-
-    JRel _ _ _ -> return (JTyPrim PTyBool)
-    JNew iname _ -> return (JTyObj iname)
-    where
-        findIfaceMethodRetTy iname fname = do
-            method <- lookupOperation iname fname
-            case _imRet method of
-                Just ty -> return (iTypeToJsType ty)
-                Nothing -> return (JTyPrim PTyNull)
-        findIfaceAttrTy iname aname = do
-            mAttrTy <- lookupAttr iname aname
-            case mAttrTy of
-                Just ty -> return (iTypeToJsType ty)
-                Nothing -> return (JTyPrim PTyNull)
-
-handleCall lvar fn@(Name f) es = do
-    op <- lookupOperationWithLvar fn lvar
-    ifM (hasCallbackArgs op)
-        (compileCallWithCbs lvar op es)
-        (return () -- do something
-            -- (tlm, _) <- withTarget "Main" $ do
-            --     x <- compileLVar lvar
-            --     DCall x f <$> mapM compileExpr es
-            --     reportToReply <$> getSat tlm
-            )
-    return (Sat Nothing)
-
-compileExpr :: JsExpr -> Type -> Session DyExpr
-
-compileExpr (JVal v) ty = DVal <$> compileJsVal v ty
-
-compileExpr (JInterface i) (TyInterface i')
-    | i == i'   = DVal . DVar <$> compileLVar (LInterface i)
-    | otherwise = error "compileExpr: iface name doesn't match"
-
-compileExpr (JAccess lvar (Name attr)) _ = do
-    x <- compileLVar lvar
-    return $ DAccess x attr
-
-compileExpr (JRel op e1 e2) TyBoolean = do
-    ty1 <- jsTypeToIType <$> inferType e1
-    ty2 <- jsTypeToIType <$> inferType e2
-    if ty1 == ty2 then
-        DRel op <$> compileExpr e1 ty1 <*> compileExpr e2 ty2
-        else error "biop diff type"
-compileExpr (JNew i args) (TyInterface i') | i == i' = do
-    types <- mapM inferType args
-    cons_name <- findCons i types
-    v <- getPlatObj i
-    args' <- mapM (uncurry compileExpr) (zip args $ map jsTypeToIType types)
-    return (DCall v cons_name args')
-
-hasCallbackArgs :: Operation -> Session Bool
-hasCallbackArgs op = or <$> mapM (\(Argument _ ty _) -> isJust <$> lookupCbTy ty) (_imArgs op)
-
-compileCallWithCbs lvar op es = do
-    let fname = (unName $ _imName op)
+handleGet :: LVar -> Name -> ServeReq ()
+handleGet lvar aname@(Name attr) = do
     iname <- lvarToIfaceName lvar
-    (es', cbs) <- foldM (\(es, cbs) (e, Argument argn argty _)-> do
-                            mCb <- lookupCbTy argty
-                            case mCb of
-                                Just cb -> do
-                                    let cbspec = queryCallbackSpec op argn
-                                    return (es, cbs ++ [(e, cbspec, cb)])
-                                Nothing -> return (es ++ [(e, argty)], cbs))
-                        ([], [])
-                        (zip es (_imArgs op))
-    cbmReplies <- forM cbs $ \(JEClos n, CallbackSpec _ reqe withEs, cb) -> do
-        -- first emit a method checking if this control-flow can go
-        modifyMethod (unName iname) fname (andRequires reqe)
-        f <- fresh
-        (tlm, _) <- withTarget ("Main_" ++ f) $ do
-            x <- compileLVar lvar
-            de <- DCall x fname <$> mapM (uncurry compileExpr) es'
-            fx <- fresh
-            addStmt (SVarDef fx de)
-        eReport <- getSat tlm
+    ty <- lookupAttr iname aname
+    x <- compileLVar lvar
+    jsValRet <- getJsValResult (DAccess x attr) ty inlineAssCtx
+    reply $ Sat (jsValRet, Nothing)
+
+handleUnionCall :: LVar -> OperationOrConstructor -> [JsUnionVal] -> ServeReq ()
+handleUnionCall lvar ooc uvals = do
+    -- regenerate mono-calls
+    let pairs = zip uvals (map _argTy (oocArgs ooc ++ oocOptArgs ooc))
+
+    let calls = merge $ map singlify pairs
+
+    forM_ calls $ \(vals, argtys) -> do
+        -- compile non-optional arguments
+        handleSingleCall lvar ooc vals argtys
+
+merge :: [[(JsImmVal, IType)]] -> [([JsImmVal], [IType])]
+merge [] = []
+merge [choices] = map (\(val, ty) -> ([val], [ty])) choices
+merge (choices:args) = concatMap (\(val, ty) -> map (\(vals, tys) -> (val : vals, ty: tys)) (merge args)) choices
+
+singlify :: (JsUnionVal, IType_) -> [(JsImmVal, IType)]
+singlify (JsUnionVal [x], ITySingle ty) = [(ImmVal x, ty)] -- no need to fiddling the type if monomorphic
+singlify (JsUnionVal vals, ITyUnion tys)
+    | length vals == length tys =
+        let iname = getUnionIfaceName tys
+            consNames = map (getADTConsName iname) tys
+        in  zip (map (\(consName, val) -> ImmApp consName val) (zip consNames vals)) (repeat (TyInterface iname))
+singlify x = error $ "singlify " ++ show x ++ " failed"
+
+data OperationOrConstructor = Op Operation | Cons Name Name InterfaceConstructor
+
+oocArgs :: OperationOrConstructor -> [Argument]
+oocArgs (Op op) = _imArgs op
+oocArgs (Cons _ _ cons) = _icArgs cons
+
+oocOptArgs :: OperationOrConstructor -> [Argument]
+oocOptArgs (Op op) = _imOptArgs op
+oocOptArgs (Cons _ _ cons) = _icOptArgs cons
+
+oocName :: OperationOrConstructor -> Name
+oocName (Op op) = _imName op
+oocName (Cons _ consName _) = consName
+
+oocRet :: OperationOrConstructor -> Maybe IType
+oocRet (Op op) = _imRet op
+oocRet (Cons iname _ _) = Just $ TyInterface iname
+
+data JsImmVal = ImmVal JsVal
+              | ImmApp Name JsVal
+
+handleSingleCall :: LVar -> OperationOrConstructor -> [JsImmVal] -> [IType] -> ServeReq ()
+handleSingleCall lvar ooc vals tys = do
+    let nargs = length (oocArgs ooc) + length (oocOptArgs ooc)
+    let nopts = length (oocOptArgs ooc)
+    let argNames = (map _argName $ oocArgs ooc ++ oocOptArgs ooc)
+    (args, cbs) <- partitionEithers <$>
+                       forM (zip3 vals tys argNames)
+                            (\(val, ty, argn) -> do
+                                let f = \case
+                                            JVClos n -> do
+                                                let cbspec = queryCallbackSpec ooc argn
+                                                cb <- lookupCb ty
+                                                return $ Right (n, cbspec, cb)
+                                            val -> Left <$> compileNonCbJsVal val ty
+                                case val of
+                                    ImmVal val -> f val
+                                    ImmApp fname val -> do
+                                        lr <- f val
+                                        case lr of
+                                            Left e -> return $ Left $ DApp (unName fname) [e]
+                                            Right _ -> return lr)
+                                
+    let nnonopt = nargs - nopts
+    let args' = take nnonopt args ++
+                map DSome (drop nnonopt args) ++
+                take (nargs - length args) (repeat DNone)
+
+    -- comopile callback replies
+    cbsret <- if cbs == [] then return Nothing else Just <$> compileCbs lvar ooc args' cbs
+
+    -- compile value replies
+    x <- compileLVar lvar
+    let fname = unName (oocName ooc)
+    case oocRet ooc of
+        Nothing -> do -- invocation, no return value
+            ret <- checkInvocation x fname args'
+            if ret
+                then reply $ Sat (nullJsRetVal, cbsret)
+                else reply $ Unsat "Invalid invocation"
+        Just retty -> do -- evaluation, with return value
+            jsRetVal <- getJsValResult (DCall x fname args') retty inlineAssCtx
+            reply $ Sat (jsRetVal, cbsret)
+
+-- Monoid Assertion Context
+type AssContext = JAssert -> ServeReq Report
+
+-- If nothing, means failed
+getJsValResult :: DyExpr -> IType -> AssContext -> ServeReq JsValResult
+getJsValResult dyexpr ty ctx =
+    case ty of
+        TyInterface iname -> getObjResult iname
+        TyNullable ty -> getJsValResult dyexpr ty ctx
+        TyBuiltIn iname -> getObjResult iname
+        TyAny -> getObjResult (Name "Any")
+        TyObject -> getObjResult (Name "Object")
+        TyBoolean -> getPrimResult PTyBool dyexpr ctx
+        TyInt -> getPrimResult PTyInt dyexpr ctx
+        TyFloat -> getPrimResult PTyNumber dyexpr ctx
+        TyDOMString -> getPrimResult PTyString dyexpr ctx
+        TyArray _ -> throwE $ "array is not supported yet"
+    where
+        getObjResult iname = do
+            (r, vname) <- allocOnHeap iname
+            addStmt (SVarDef vname dyexpr)
+            return $ (JVRRef r)
+
+getPrimResult :: PrimType -> DyExpr -> AssContext -> ServeReq JsValResult
+getPrimResult pty de ctx = do
+    domainMap <- _pDomains <$> get
+    let Just domains = M.lookup pty domainMap
+    let assertions = domainsToAssertions domains
+    (_, flags) <- head <$> flip filterM assertions (\(assert, _) -> reportToBool <$> ctx assert)
+    return (JVRPrim pty flags)
+
+
+type CallbackTriple = ( Int -- arity
+                      , CallbackSpec -- spec
+                      , Callback -- AST node
+                      )
+
+compileCbs :: LVar -> OperationOrConstructor -> [DyExpr] -> [CallbackTriple] -> ServeReq JsCallbackResult
+compileCbs lvar ooc noncbargs cbs = do
+    iname <- unName <$> lvarToIfaceName lvar
+    let fname = unName (oocName ooc)
+    let checkSat = do
+                        f <- fresh
+                        x <- compileLVar lvar
+                        lhs <- fresh
+                        addStmt (SVarDef lhs (DCall x fname noncbargs))
+                        getSat
+
+    mBranchs <- forM cbs $ \(n, CallbackSpec _ reqe withEs, cb) -> do
+
+        eReport <- withModifiedMethod iname fname (andRequires reqe) checkSat
+
         if reportToBool eReport
-            then do -- if can go
-                    let cbArgtys = map (\(Argument _ ty _) -> iTypeToJsType ty) (_cArgs cb)
-                    replies <- forM (zip withEs cbArgtys) $ \(withE, argty) -> case argty of
-                                    JTyObj iname -> do
-                                        (r, vname) <- allocOnHeap iname
-                                        addStmt (SVarDef vname (DStrRepr withE))
-                                        return (Sat (Just r))
-                                    JTyPrim pty -> do
-                                            domainMap <- _pDomains <$> get
-                                            let Just domains = M.lookup pty domainMap
-                                            let assertions = domainsToAssertions domains
-                                            (_, flags) <- head <$> flip filterM assertions
-                                                                (\(JAssert name je, _) -> do
-                                                                        je' <- compileExpr je TyBoolean
-                                                                        let x = DVal (DVar (unName name))
-                                                                        modifyMethod (unName iname) fname
-                                                                                     ( letBindRequires (unName name) (DStrRepr withE)
-                                                                                     . andRequires (prettyShow je'))
-                                                                        f <- fresh
-                                                                        (tlm, _) <- withTarget ("Main_" ++ f) $ do
-                                                                            x <- compileLVar lvar
-                                                                            de <- DCall x fname <$> mapM (uncurry compileExpr) es'
-                                                                            fx <- fresh
-                                                                            addStmt (SVarDef fx de)
-                                                                        reportToBool <$> getSat tlm)
-                                            return (Replies pty flags)
+            then do
+                jsRetVals <- forM (zip withEs (_cArgs cb)) $ \(withE, arg) -> do
+                    let ITySingle ty = _argTy arg
+                    getJsValResult (DStrRepr withE) ty $ \(JAssert name je) -> do
+                        je' <- compileExpr je
+                        let x = DVal (DVar (unName name))
+                        withModifiedMethod
+                            iname fname
+                            ( letBindRequires (unName name) (DStrRepr withE)
+                            . andRequires (prettyShow je'))
+                            checkSat
+                return $ Just jsRetVals
+            else return Nothing
 
-                    return (Just (reportToReply eReport, replies))
-            else return Nothing -- if can't
+    return $ JsCallbackResult mBranchs
 
-    reply (ReplyCallback cbmReplies)
+compileNonCbJsVal :: JsVal -> IType -> ServeReq DyExpr
+compileNonCbJsVal val = \case
+    TyInterface i -> compileIfaceOrDict val i
+    TyDOMString -> compilePrim val PTyString
+    TyInt -> compilePrim val PTyInt
+    TyFloat -> compilePrim val PTyNumber
+    TyAny -> compileIfaceOrDict val (Name "Any")
+    TyNullable ty -> compileNonCbJsVal val ty
+    TyBoolean -> compilePrim val PTyBool
+    TyObject -> compileIfaceOrDict val (Name "Object")
+    TyBuiltIn i -> compileIfaceOrDict val i
+    TyArray _ -> throwE "array type is not supported yet"
+
+compileIfaceOrDict :: JsVal -> Name -> ServeReq DyExpr
+compileIfaceOrDict jsval iname = do
+    case lookupDefinition iname of
+        Nothing -> throwE $ "Invalid interface name: " ++ show iname
+        Just def ->
+            case def of
+                DefInterface iface -> compileIface jsval iface
+                DefDictionary dict -> compileDict jsval dict
+                DefCallback _ -> throwE $ "Delayed callback compilation: " ++ show iname
+                DefException _ -> throwE $ "Invalid interface name: " ++ show iname
+
+compileIface :: JsVal -> Interface -> ServeReq DyExpr
+compileIface (JVRef jref) iface = do
+     JsObj iname <- lookupObj jref
+     if iname == _iName iface
+        then (DVal . DVar) <$> lookupBinding jref
+        else throwE $ "Inconsistency between jref and iface type"
+compileIface otherval _ = throwE $ "Invalid jsval for interface: " ++ show otherval
+
+compileDict :: JsVal -> Dictionary -> ServeReq DyExpr
+compileDict (JVDict m) dict = do
+    let args = M.fromList $ map (\(DictionaryMember ty x _) -> (unName x, iTypeToDyType ty))
+                                (_dmembers dict)
+
+    dyexprs <- forM m $ \(name, jsval) -> do
+                            case M.lookup (unName name) args of
+                                Nothing -> throwE $ "No such member " ++ show name ++
+                                                    " in dictionary " ++ show (_dname dict)
+                                Just ty -> compileNonCbJsVal jsval (dyTypeToIType ty)
+
+    return (DCall (unName (_dname dict)) "new" dyexprs)
+
+compileDict otherval _ = throwE $ "Invalid jsval for dictionary: " ++ show otherval
+
+compilePrim :: JsVal -> PrimType -> ServeReq DyExpr
+compilePrim (JVPrim pty assert) _ = do
+    x <- fresh
+    let je = app assert (Name x)
+    de <- compileExpr je
+    addArg x (pTyToDTy pty)
+    addRequire de
+    return (DVal (DVar x))
+
+compileLVar :: LVar -> ServeReq String
+compileLVar = \case
+    LRef r -> lookupBinding r
+    LInterface iname -> lookupPlatObj iname
+
+compileExpr :: JsExpr -> ServeReq DyExpr
+compileExpr (JEVar x) = return (DVal $ DVar (unName x))
+compileExpr (JEPrim prim) = return $ DVal (DPrim prim)
+compileExpr (JEBinary op e1 e2) = do
+    DRel op <$> compileExpr e1 <*> compileExpr e2
+compileExpr other = throwE $ "Can't compile Expr " ++ show other
+
+-- Misc
 
 andRequires :: String -> TraitMemberMethod -> TraitMemberMethod
 andRequires r m = modifyRequires m (\case
@@ -423,220 +385,105 @@ letBindRequires x e m = modifyRequires m (fmap (\s -> "var " ++ x ++ " := " ++ p
 modifyRequires :: TraitMemberMethod -> (Maybe String -> Maybe String) -> TraitMemberMethod
 modifyRequires m f = m { _tmRequires = f (_tmRequires m) }
 
-lookupCbTy :: Type -> Session (Maybe Callback)
-lookupCbTy (TyInterface n) = do
-    cbs <- _cbs . _spec <$> get
-    case M.lookup n cbs of
-        Nothing -> return Nothing
-        Just cb -> return (Just cb)
-lookupCbTy _ = return Nothing
+queryCallbackSpec :: OperationOrConstructor -> Name -> CallbackSpec
+queryCallbackSpec ooc x = 
+    case ooc of
+        Op op -> head $ filter (\(CallbackSpec x' _ _) -> x' == x) (_imCbs op)
+        Cons _ _ _ -> error "can't query constructor for callback"
 
-modifyMethod :: String -> String -> (TraitMemberMethod -> TraitMemberMethod) -> Session ()
-modifyMethod tname fname f = do
-    modifyTrait tname (\t ->
+getSat :: ServeReq Report
+getSat = do
+    tlm <- _tlm <$> get
+    traits <- lookupTraits
+    modify (\s -> s { _names = M.empty, _traitsNew = Nothing })
+    let src = unlines (map (show . pretty) $ M.elems traits) ++ "\n" ++ show (pretty tlm)
+    logging ("Getting sat from REST...tlm: \n" ++ src)
+    ans <- liftIO $ askDafny (Local "/home/zhangz/xwidl/dafny/Binaries") src
+    case ans of
+        Right ret -> do
+            logging ("Got sat: " ++ show ret)
+            return ret
+        Left err -> error $ "Dafny connection error: " ++ err
+
+reportToBool :: Report -> Bool
+reportToBool = \case
+    Verified -> True
+    Failed   -> False
+
+domainsToAssertions :: [JAssert] -> [(JAssert, [Bool])]
+domainsToAssertions domAsses =
+    let (JAssert x _) = head domAsses
+        es      = map (\(JAssert _ e) -> e) domAsses
+        conj es = JAssert x (conj' es)
+    in  map (\bm -> (conj $ map fst $ filter snd (zip es bm), bm)) (f (length es))
+    where
+        f 0 = []
+        f 1 = [[False], [True]]
+        f n = let bms = f (n - 1)
+              in  map (False:) bms ++ map (True:) bms
+        conj' [] = JEPrim (PBool False)
+        conj' (e:[]) = e
+        conj' (e:es) = JEBinary Or e (conj' es)
+
+
+-- reply :: Reply -> Session ()
+reply r = (_handler <$> get) >>= \hd -> liftIO (ePutLine hd r)
+
+-- NOTE: Side-effect free
+withModifiedMethod :: String -> String -> (TraitMemberMethod -> TraitMemberMethod) -> ServeReq Report -> ServeReq Report
+withModifiedMethod tname fname f m = do
+    withModifiedTrait tname (\t ->
         let mtds = _tmethods t in
         case M.lookup fname mtds of
             Just mtd -> t { _tmethods = M.insert fname (f mtd) mtds }
-            Nothing  -> t)
+            Nothing  -> t) m
 
-modifyTrait :: String -> (Trait -> Trait) -> Session ()
-modifyTrait x f = do
-    traits <- getTraits
+-- NOTE: Side-effect free
+withModifiedTrait :: String -> (Trait -> Trait) -> ServeReq a -> ServeReq a
+withModifiedTrait x f m = do
+    traits <- lookupTraits
     case M.lookup x traits of
-        Just t -> modify (\s -> s { _traitsNew = Just (M.insert x (f t) traits)})
-        Nothing -> return ()
+        Just t -> do
+            modify (\s -> s { _traits = M.insert x (f t) traits })
+            a <- m
+            modify (\s -> s { _traits = M.insert x t traits })
+            return a
+        Nothing -> throwE "Invalid interface name"
 
-queryCallbackSpec :: Operation -> Name -> CallbackSpec
-queryCallbackSpec op x = head $ filter (\(CallbackSpec x' _ _) -> x' == x) (_imCbs op)
-
-lvarToIfaceName = \case
-    LInterface iname -> return iname
-    LVal v -> case v of
-        JVRef r -> do
-            JsObj iname <- lookupObj r
-            return iname
-
-lookupOperationWithLvar fname lvar =
-    lvarToIfaceName lvar >>= \iname -> lookupOperation iname fname
-
-{-
-    DRef  -> DVar
-    JVPrim -> DPrim
-    -- JSeq  -> DSeq
--}
-
-compileJsVal :: JsVal -> Type -> Session DyVal
-compileJsVal v ty = case v of
-    JVRef r  -> DVar <$> lookupBinding r
-    JVPrim p -> return (DPrim p)
-    JVVar n -> do
-        names <- _names <$> get
-        case M.lookup n names of
-            Just x -> return $ DVar x
-            Nothing -> do
-                warning $ "Invalid name in JsVal: " ++ show n ++ ", fall back to direct name"
-                return (DVar (unName n))
-    JVDict dict ->
-        case ty of
-            TyInterface i -> do
-                dicts <- _dicts . _spec <$> get
-                let Just dict = M.lookup i dicts
-                -- let names = dict TODO: do some checking here
-                cons_name <- findCons i []
-                platv <- getPlatObj i
-                vname <- fresh
-                addStmt (SVarDef vname (DCall platv cons_name []))
-                return (DVar vname)
-            _ -> error "Unable to handle dict"
-    other    -> error $ "Can't compile JsVal: " ++ show other
-
--- compileJsVal (JSeq vs) = DSeq <$> mapM compileJsVal vs
-
-updateTarget :: (TopLevelMethod -> TopLevelMethod) -> Session ()
-updateTarget f = modify (\s -> s { _tlms = M.update (Just . f) (_target s) (_tlms s) })
-
-getTarget :: Session TopLevelMethod
-getTarget = do
-    s <- get
-    case M.lookup (_target s) (_tlms s) of
-        Just tlm -> return tlm
-        Nothing  -> error "Invalid current target"
-
-addArg :: String -> DyType -> Session ()
-addArg x ty = updateTarget (\m -> m { _tlArgs = M.insert x ty (_tlArgs m) })
-
-getPlatObj :: Name -> Session String
-getPlatObj iname = do
-    args <- _tlArgs <$> getTarget
-    let vname = toLowerFirst (unName iname)
-    case M.lookup vname args of
-        Just _  -> return vname
-        Nothing -> do
-            addArg vname (DTyClass (unName iname))
-            addRequire (DRel NotEqual (DVal (DVar vname)) (DVal (DPrim PNull)))
-            return vname
-
-addRequire :: DyExpr -> Session ()
-addRequire e =  updateTarget (\m -> m { _tlRequires = e : _tlRequires m })
-
-addStmt :: Stmt -> Session ()
-addStmt s = updateTarget (\m -> m { _tlBody = _tlBody m ++ [s] })
-
-addName :: Name -> String -> Session ()
-addName n x = modify (\s -> s { _names = M.insert n x (_names s)})
-
-allocOnHeap :: Name -> Session (JRef, String)
-allocOnHeap iname = do
-    h <- _heap <$> get
-    let (r, h') = alloc (JsObj iname) h
-    modify (\s -> s { _heap = h' })
-    let vname = toLowerFirst (unName iname) ++ "_" ++ show (unJRef r)
-    return (r, vname)
-
-toLowerFirst :: String -> String
-toLowerFirst (x : xs) = toLower x : xs
-toLowerFirst [] = []
-
-lookupObj :: JRef -> Session JsObj
-lookupObj (JRef r) = do
-    h <- _heap <$> get
-    case M.lookup r (_mapping h) of
-        Just o  -> return o
-        Nothing -> error $ "Can't find ref " ++ show r ++ "in heap"
-
-lookupBinding :: JRef -> Session String
-lookupBinding r = do
-    JsObj iname <- lookupObj r
-    return (toLowerFirst (unName iname) ++ "_" ++ show (unJRef r))
-
-lookupOperation :: Name -> Name -> Session Operation
-lookupOperation i f = do
-    ifaces <- _ifaces . _spec <$> get
-    case M.lookup i ifaces of
-        Just iface -> case M.lookup f (_operations iface) of
-            Just method -> return method
-            Nothing -> error $ "Invalid method name: " ++ show f
-        Nothing -> error $ "Invalid Interface name: " ++ show i
-
-lookupAttr :: Name -> Name -> Session (Maybe Type)
-lookupAttr i a = do
-    ifaces <- _ifaces . _spec <$> get
-    case M.lookup i ifaces of
-        Just iface -> return $ M.lookup a (_ghostAttrs iface)
-        Nothing    -> error $ "Invalid Interface name: " ++ show i
-
-iTypeToJsType :: Type -> JsType
-iTypeToJsType = \case
-    TyInterface x -> JTyObj x
-    TyDOMString   -> JTyPrim PTyString
-    TyNullable (TyInterface x) -> JTyObj x
-    TyInt         -> JTyPrim PTyInt
-    TyFloat       -> JTyPrim PTyDouble
-    ty -> error $ "Can't translate Type: " ++ show ty
+inferJsUnionValType :: JsUnionVal -> ServeReq IType_
+inferJsUnionValType (JsUnionVal [val]) = ITySingle <$> inferJsValType val
+inferJsUnionValType (JsUnionVal vals) = ITyUnion <$> mapM inferJsValType vals
 
 
-jsTypeToIType :: JsType -> Type
-jsTypeToIType = \case
-    JTyObj x -> TyInterface x
-    JTyPrim PTyString -> TyDOMString
-    JTyObj x -> TyNullable (TyInterface x)
-    JTyPrim PTyInt -> TyInt
-    JTyPrim PTyDouble -> TyFloat
-    ty -> error $ "Can't translate Type: " ++ show ty
+inferJsValType :: JsVal -> ServeReq IType
+inferJsValType = \case
+    JVRef r -> do
+        JsObj iname <- lookupObj r
+        return $ TyInterface iname
+    JVPrim pty _ -> return $ pTyToIType pty
+    JVClos _ -> throwE $ "can't infer type for callback"
+    JVDict _ -> throwE $ "can't infer type for dictionary"
 
-findCons :: Name -> [JsType] -> Session String
-findCons iname argTypes = do
-    ifaces <- _ifaces . _spec <$> get
-    case M.lookup iname ifaces of
-        Just iface -> do
-            let consTypes = zip [(0 :: Int)..] (map _icArgs (_constructors iface))
-            case filter (match . snd) consTypes of
-                (i, _):_ -> return $ "new_" ++ show i
-                _ -> error $ "Failed to find a proper constructor: " ++ show argTypes
-        Nothing -> error $ "Invalid Interface name: " ++ show iname
-    where
-        match :: [Argument] -> Bool
-        match consTypes =
-            if length consTypes == length argTypes then
-                let consTypes' = map (iTypeToJsType . (\(Argument _ ty _) -> ty)) consTypes
-                in  and (map (uncurry typeEquiv) (zip consTypes' argTypes))
-            else False
-
-typeEquiv :: JsType -> JsType -> Bool
-typeEquiv (JTyPrim PTyNull) (JTyObj _) = True
-typeEquiv (JTyObj _) (JTyPrim PTyNull) = True
-typeEquiv t1 t2 = t1 == t2
-
-fresh :: Session String
-fresh = do
-    namer <- _namer <$> get
-    let (x, namer') = freshName namer
-    modify (\s -> s { _namer = namer' })
-    return x
-
-ptyToDyType :: PrimType -> DyType
-ptyToDyType = \case
-    PTyInt       -> DTyInt
-    PTyDouble    -> DTyReal
-    PTyString    -> DTyString
-    PTyBool      -> DTyBool
-    other        -> error $ "can't translate " ++ show other ++ " to DyType"
-    -- XXX: for null, we can initialize an empty Object class
-
--- Namer
-
-data Namer = Namer Int
-
-initNamer :: Namer
-initNamer = Namer 0
-
-freshName :: Namer -> (String, Namer)
-freshName (Namer x) = ("fresh_" ++ show x, Namer (x + 1))
-
-ifM :: Monad m => m Bool -> m a -> m a -> m a
-ifM x a b = x >>= \x -> if x then a else b
+pTyToIType :: PrimType -> IType
+pTyToIType = \case
+    PTyNull -> error "can't infer type for null value"
+    PTyNumber -> TyFloat
+    PTyInt -> TyInt
+    PTyString -> TyDOMString
+    PTyBool -> TyBoolean
 
 
-prettyShow = show . pretty
+checkInvocation = undefined
+    
+nullJsRetVal :: JsValResult
+nullJsRetVal = undefined
 
-warning s = liftIO (putStrLn $ "[WARNING] " ++ s)
+lookupDefinition :: Name -> Maybe Definition
+lookupDefinition = undefined
+
+
+dyTypeToIType = undefined
+
+
+pTyToDTy = undefined
+

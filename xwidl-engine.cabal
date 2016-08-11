@@ -13,6 +13,8 @@ cabal-version:       >=1.10
 library
   exposed-modules:     Model
                        Session
+                       State
+                       Util
                        Language.Dafny.AST
                        Language.Dafny.Translate
                        Language.XWIDL.Spec
@@ -24,7 +26,7 @@ library
                        mtl >=2.2 && <2.3, wl-pprint, free, js-bridge,
                        aeson, network-simple, network, bytestring,
                        language-webidl >=0.1.4.0 && <0.1.5.0,
-                       MissingH, dafny-bridge, atomic-primops
+                       MissingH, dafny-bridge, atomic-primops, transformers
   hs-source-dirs:      src
   default-language:    Haskell2010
   ghc-options:         -Wall -fno-warn-orphans
