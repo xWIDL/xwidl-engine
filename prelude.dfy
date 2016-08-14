@@ -7,3 +7,7 @@ trait Any {
 trait Object {
 
 }
+
+trait CallbackTrait {
+
+}

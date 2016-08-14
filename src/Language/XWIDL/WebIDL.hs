@@ -43,7 +43,6 @@ transDefsToSpec defs = do
         distribute (x, DefInterface i) s = s { _ifaces = M.insert x i (_ifaces s) }
         distribute (x, DefDictionary d) s = s { _dicts = M.insert x d (_dicts s) }
         distribute (x, DefException e) s = s { _exceptions = M.insert x e (_exceptions s) }
-        -- distribute (x, DefEnum e) s = s { _enums = M.insert x e (_enums s) }
         distribute (x, DefCallback c) s = s { _cbs = M.insert x c (_cbs s) }
 
 transDef :: W.Definition Tag -> Trans ()

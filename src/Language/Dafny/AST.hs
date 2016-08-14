@@ -42,8 +42,6 @@ data DyExpr = DVal DyVal
             | DAccess String String
             | DRel RelBiOp DyExpr DyExpr
             | DStrRepr String
-            | DSome DyExpr
-            | DNone
             deriving (Show)
 
 data Stmt = SVarDecl String DyType -- var x : <type>;

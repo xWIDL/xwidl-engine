@@ -75,13 +75,13 @@ translateDict (Dictionary dname mInherit dmembers) = do
     let tname = unName dname
     -- constructor
     let cons = TraitMemberMethod {
-                    _tmName = "new",
+                    _tmName = "new_def",
                     _tmArgs = M.elems attrs,
                     _tmRet  = Just ("ret", DTyClass (unName dname)),
                     _tmEnsures = Nothing,
                     _tmRequires = Nothing
                 }
-    let methods = M.singleton "new" cons
+    let methods = M.singleton "new_def" cons
     case mInherit of
         Just parent -> do
             dicts <- _dicts . _spec <$> get
@@ -108,10 +108,9 @@ translateConstructor iname (idx, InterfaceConstructor{..}) = do
 
 translateMethod :: Operation -> Trans [TraitMemberMethod]
 translateMethod Operation{..} = do
-    args <- filterM (notCb . _argTy) _imArgs
-    optargs <- filterM (notCb . _argTy) _imOptArgs
-    let argss = mapArg iTypeToDyType args
-    let optargss = mapArg (DTyOpt . iTypeToDyType) optargs
+    cbs <- _cbs . _spec <$> get
+    let argss = mapArg iTypeToDyType $ map (replaceCb cbs) _imArgs
+    let optargss = mapArg (DTyOpt . iTypeToDyType) $ map (replaceCb cbs) _imOptArgs
     let argss' = argss ++ optargss
     let retty = fmap (\ty -> ("ret", iTypeToDyType ty)) _imRet
     forM (merge argss') $ \args'' -> do
@@ -135,13 +134,14 @@ merge [] = [([], [])]
 merge [choices] = map (\(val, ty) -> ([val], [ty])) choices
 merge (choices:args) = concatMap (\(val, ty) -> map (\(vals, tys) -> (val : vals, ty: tys)) (merge args)) choices
 
-notCb :: IType_ -> Trans Bool
-notCb (ITySingle (TyInterface n)) = do
-    cbs <- _cbs . _spec <$> get
-    case M.lookup n cbs of
-        Nothing -> return True
-        Just _  -> return False
-notCb _ = return True
+replaceCb :: M.Map Name Callback -> Argument -> Argument
+replaceCb cbs arg = do
+    case _argTy arg of
+        (ITySingle (TyInterface n)) -> do
+            case M.lookup n cbs of
+                Nothing -> arg
+                Just _  -> Argument (_argName arg) (ITySingle (TyInterface $ Name "CallbackTrait")) (_argOptDef arg)
+        _ -> arg
 
 iType_ToDyType :: IType_ -> Trans DyType
 iType_ToDyType = \case

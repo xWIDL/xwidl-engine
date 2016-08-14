@@ -84,8 +84,8 @@ run = do
     where
         initTargetMethod = TopLevelMethod {
             _tlName = "Main",
-            _tlArgs = M.empty,
-            _tlRequires = [],
+            _tlArgs = M.singleton "cb" (DTyClass "CallbackTrait"),
+            _tlRequires = [DRel NotEqual (DVal (DVar "cb")) (DVal (DPrim PNull))],
             _tlBody = []
         }
 
@@ -171,27 +171,25 @@ handleSingleCall lvar ooc vals tys = do
     let nargs = length (oocArgs ooc) + length (oocOptArgs ooc)
     let nopts = length (oocOptArgs ooc)
     let argNames = (map _argName $ oocArgs ooc ++ oocOptArgs ooc)
-    (args, cbs) <- partitionEithers <$>
+    (args, cbs) <- partitionEithers . concat <$>
                        forM (zip3 vals tys argNames)
                             (\(val, ty, argn) -> do
                                 let f = \case
                                             JVClos n -> do
                                                 let cbspec = queryCallbackSpec ooc argn
                                                 cb <- lookupCb ty
-                                                return $ Right (n, cbspec, cb)
-                                            val -> Left <$> compileNonCbJsVal val ty
+                                                return [Left  (DVal (DVar "cb")),
+                                                        Right (n, cbspec, cb)]
+                                            val -> (\v -> [Left v]) <$> compileNonCbJsVal val ty
                                 case val of
                                     ImmVal val -> f val
                                     ImmApp fname val -> do
-                                        lr <- f val
-                                        case lr of
-                                            Left e -> return $ Left $ DApp (unName fname) [e]
-                                            Right _ -> return lr)
-
+                                        (ls, rs) <- partitionEithers <$> f val
+                                        return (map (\e -> Left (DApp (unName fname) [e])) ls ++ map Right rs))
     let nnonopt = nargs - nopts
     let args' = take nnonopt args ++
-                map DSome (drop nnonopt args) ++
-                take (nargs - length args) (repeat DNone)
+                map (\a -> DApp "Some" [a]) (drop nnonopt args) ++
+                take (nargs - length args) (repeat $ DVal (DVar "None"))
 
     -- comopile callback replies
     cbsret <- if cbs == [] then return Nothing else Just <$> compileCbs lvar ooc args' cbs
@@ -238,21 +236,25 @@ getJsValResult dyexpr ty ctx =
 getPrimResult :: PrimType -> AssContext -> ServeReq JsValResult
 getPrimResult pty ctx = do
     domainMap <- _pDomains <$> get
-    let Just domains = M.lookup pty domainMap
-    let assertions = domainsToAssertions domains
-    (_, flags) <- head <$> flip filterM assertions (\(assert, _) -> reportToBool <$> ctx assert)
-    return (JVRPrim pty flags)
+    case M.lookup pty domainMap of
+        Just domains -> do
+            let assertions = domainsToAssertions domains
+            (_, flags) <- head <$> flip filterM assertions (\(assert, _) -> reportToBool <$> ctx assert)
+            return (JVRPrim pty flags)
+        Nothing -> throwE $ "Invalid pty for domainMap key: " ++ show pty
 
 compileCbs :: LVar -> OperationOrConstructor -> [DyExpr] -> [CallbackTriple] -> ServeReq JsCallbackResult
 compileCbs lvar ooc noncbargs cbs = do
+    logging $ "compileCbs-cbs: " ++ show cbs
     iname <- unName <$> lvarToIfaceName lvar
     let fname = unName (oocName ooc)
     let checkSat = do
                         f <- fresh
                         x <- compileLVar lvar
                         lhs <- fresh
-                        addStmt (SVarDef lhs (DCall x fname noncbargs))
-                        getSat
+                        tempTLM $ do
+                            addStmt (SVarDef lhs (DCall x fname noncbargs))
+                            getSat
 
     mBranchs <- forM cbs $ \(n, CallbackSpec _ reqe withEs, cb) -> do
 
@@ -319,7 +321,7 @@ compileDict (JVDict m) dict = do
                                                     " in dictionary " ++ show (_dname dict)
                                 Just ty -> compileNonCbJsVal jsval (dyTypeToIType ty)
 
-    return (DCall (unName (_dname dict)) "new" dyexprs)
+    return (DCall (unName (_dname dict)) "new_def" dyexprs)
 
 compileDict otherval _ = throwE $ "Invalid jsval for dictionary: " ++ show otherval
 
