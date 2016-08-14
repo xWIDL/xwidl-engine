@@ -13,6 +13,8 @@ import Language.JS.Type
 import Language.JS.Platform
 import Control.JS.Utils.Server
 
+import qualified Language.WebIDL.AST as W
+
 import Model
 import State
 import Util
@@ -141,12 +143,17 @@ handleNewCons iname uvals = do
     handleUnionCall (LInterface iname) (Cons iname (Name consName) cons) uvals
 
 handleGet :: LVar -> Name -> ServeReq ()
-handleGet lvar aname@(Name attr) = do
+handleGet lvar name@(Name nameStr) = do
     iname <- lvarToIfaceName lvar
-    ty <- lookupAttr iname aname
-    x <- compileLVar lvar
-    jsValRet <- getJsValResult (DTerm (DAccess x attr))
-                               ty (inlineAssCtx (DTerm (DAccess x attr)))
+    mConst <- lookupConsts iname name
+    jsValRet <- case mConst of
+                    Just prim -> return $ JVRPrimPrecise prim
+                    Nothing -> do
+                        ty <- lookupAttr iname name
+                        x <- compileLVar lvar
+                        getJsValResult (DTerm (DAccess x nameStr))
+                                       ty
+                                       (inlineAssCtx (DTerm (DAccess x nameStr)))
     reply $ Sat (jsValRet, Nothing)
 
 handleUnionCall :: LVar -> OperationOrConstructor -> [JsUnionVal] -> ServeReq ()

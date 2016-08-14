@@ -5,6 +5,7 @@ import Language.XWIDL.Spec
 import Language.Dafny.AST
 import Language.JS.Type
 import Language.JS.Platform
+import qualified Language.WebIDL.AST as W
 
 import System.IO
 
@@ -121,6 +122,13 @@ lookupCb (TyInterface n) = do
         Nothing -> throwE $ "Invalid callback name " ++ show n
         Just cb -> return cb
 lookupCb ty = throwE $ "Invalid callback type " ++ show ty
+
+lookupConsts :: Name -> Name -> ServeReq (Maybe Prim)
+lookupConsts iname cname = do
+    ifaces <- _ifaces . _spec <$> get
+    case M.lookup iname ifaces of
+        Just iface -> return $ M.lookup cname (_consts iface)
+        Nothing -> throwE $ "Invalid Interface name: " ++ show iname
 
 lookupCbMaybe :: IType -> ServeReq (Maybe Callback)
 lookupCbMaybe (TyInterface n) = do

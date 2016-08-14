@@ -29,6 +29,7 @@ data Interface = Interface {
     _iName :: Name,
     _iInherit :: Maybe Name,
     _constructors :: InterfaceConstructors,
+    _consts :: M.Map Name Prim,
     _attrs :: M.Map Name IType,
     _ghostAttrs :: M.Map Name IType,
     _operations :: M.Map Name Operation

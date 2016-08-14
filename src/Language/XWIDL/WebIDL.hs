@@ -39,7 +39,7 @@ transDefsToSpec defs = do
             _typemap = M.empty
         }
         dummyName = Name ""
-        dummyDef = DefInterface (Interface dummyName Nothing (InterfaceConstructors []) M.empty M.empty M.empty)
+        dummyDef = DefInterface (Interface dummyName Nothing (InterfaceConstructors []) M.empty M.empty M.empty M.empty)
         distribute (x, DefInterface i) s = s { _ifaces = M.insert x i (_ifaces s) }
         distribute (x, DefDictionary d) s = s { _dicts = M.insert x d (_dicts s) }
         distribute (x, DefException e) s = s { _exceptions = M.insert x e (_exceptions s) }
@@ -87,7 +87,7 @@ transIface' i mChangeInherit work = do
             replaceFocus (DefInterface (Interface (i2n i)
                                                   (fromMaybe Nothing mChangeInherit)
                                                   (InterfaceConstructors [])
-                                                  M.empty M.empty M.empty))
+                                                  M.empty M.empty M.empty M.empty))
             work
 
 transDict :: W.Dictionary Tag -> Trans ()
@@ -140,7 +140,7 @@ transExtAttr = \case
 
 transIfaceMember :: W.InterfaceMember Tag -> Trans ()
 transIfaceMember = \case
-    W.IMemConst _ -> return () -- TODO
+    W.IMemConst (W.Const _ cty i cv) -> emitConst cty i cv
     W.IMemAttribute attr -> transIfaceAttr attr
     W.IMemOperation op -> transIfaceOp op
 
@@ -190,7 +190,7 @@ transSingleType = \case
 
 transNonAnyType :: W.NonAnyType -> Trans IType
 transNonAnyType = \case
-    W.TyPrim primTy suffix -> applyTySuffix suffix <$> transPrimType primTy
+    W.TyPrim primTy suffix -> return $ applyTySuffix suffix (transPrimType primTy)
     W.TyDOMString suffix -> return (applyTySuffix suffix TyDOMString)
     W.TyIdent i suffix -> do
         let name = i2n i
@@ -221,13 +221,13 @@ transUMType = \case
     W.UnionTyNonAny nonAny -> transNonAnyType nonAny
     W.UnionTyAny suffix -> return (applyTySuffix suffix TyAny)
 
-transPrimType :: W.PrimitiveType -> Trans IType
+transPrimType :: W.PrimitiveType -> IType
 transPrimType = \case
-    W.PrimIntegerType _ -> return TyInt
-    W.PrimFloatType _   -> return TyFloat
-    W.Boolean           -> return TyBoolean
-    W.Byte              -> return (TyBuiltIn $ Name "Byte")
-    W.Octet             -> return (TyBuiltIn $ Name "Octet")
+    W.PrimIntegerType _ -> TyInt
+    W.PrimFloatType _   -> TyFloat
+    W.Boolean           -> TyBoolean
+    W.Byte              -> TyBuiltIn $ Name "Byte"
+    W.Octet             -> TyBuiltIn $ Name "Octet"
 
 data ArgType = NonOpt Argument
              | Opt Argument
@@ -288,6 +288,25 @@ analyzeOpAnn blocks = do
     inspectAttrComment blocks
     return $ analyzeFunAnn blocks
 
+emitConst :: W.ConstType -> W.Ident -> W.ConstValue -> Trans ()
+emitConst _ i cv = do
+    modify (\s -> let DefInterface iface = (_focus s)
+                      focus' = iface { _consts = M.insert (i2n i) (constValueToPrim cv) (_consts iface) }
+                  in  s { _focus = DefInterface focus' })
+
+cTyToIType :: W.ConstType -> Trans IType
+cTyToIType (W.ConstPrim primTy _) = return $ transPrimType primTy
+cTyToIType (W.ConstIdent i mNull) = do
+    let name = i2n i
+    tymap <- _typemap <$> get
+    let ty = case M.lookup name tymap of
+                Just (ITySingle ty) -> ty
+                Just _ -> error "tyindent union"
+                Nothing -> TyInterface name
+    case mNull of
+        Just W.Null -> return $ TyNullable ty
+        Nothing     -> return ty
+
 emitAttr :: IType -> Name -> Trans ()
 emitAttr ty x =
     modify (\s -> let DefInterface iface = (_focus s)
@@ -334,3 +353,9 @@ nameOf (DefDictionary (Dictionary name _ _)) = name
 nameOf (DefException (Exception name _ _)) = name
 -- nameOf (DefEnum (Enum name _)) = name
 nameOf (DefCallback (Callback name _ _)) = name
+
+constValueToPrim = \case
+    W.ConstBooleanLiteral b -> PBool b
+    W.ConstFloatLiteral d -> PNumber d
+    W.ConstInteger i -> PInt (fromIntegral i :: Int)
+    W.ConstNull -> PNull

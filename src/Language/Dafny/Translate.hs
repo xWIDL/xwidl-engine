@@ -39,7 +39,7 @@ translateSpec s@(Spec ifaces dicts _ _) =
                 return (ifaceTraits `M.union` dictTraits)
 
 translateIface :: Interface -> Trans (String, Trait)
-translateIface (Interface iname mInherit constructors _attrs gAttrs operations) = do
+translateIface (Interface iname mInherit constructors _consts _attrs gAttrs operations) = do
     contrs <- case constructors of
                 InterfaceConstructors conss -> M.fromList <$> mapM (translateConstructor iname) (zip [0..] conss)
                 InterfaceHTMLConstructor -> return $ M.singleton "new_def" defConstructor
