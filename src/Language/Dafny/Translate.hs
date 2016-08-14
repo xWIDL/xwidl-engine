@@ -2,7 +2,7 @@
 {-# LANGUAGE TupleSections #-}
 
 module Language.Dafny.Translate (
-    translateSpec, getADTConsName, getUnionIfaceName,
+    translateSpec, getUnionIfaceName,
     iTypeToDyType
 ) where
 
@@ -14,20 +14,28 @@ import Data.String.Utils
 import qualified Data.Map as M
 
 import Control.Monad (filterM)
-import Control.Monad.Reader hiding (join)
+import Control.Monad.State hiding (join)
 import Control.Monad.Except hiding (join)
 
 -- Interface translation
--- THIS IS BULL SHIT, we should use a datatype writer 
-type Trans = ReaderT Spec (Except String)
+type Trans = StateT TransState (Except String)
 
-translateSpec :: Spec -> Either String (M.Map String Trait)
+type Datatypes = M.Map String [(String, DyType)]
+
+data TransState = TransState {
+    _spec :: Spec,
+    _datatypes :: Datatypes
+}
+
+translateSpec :: Spec -> Either String (M.Map String Trait, Datatypes)
 translateSpec s@(Spec ifaces dicts _ _) =
-    runExcept (runReaderT (do
-                                ifaceTraits <- M.fromList <$> mapM translateIface (M.elems ifaces)
-                                dictTraits <- M.fromList <$> mapM translateDict (M.elems dicts)
-                                return (ifaceTraits `M.union` dictTraits)
-                                ) s)
+    fmap (\(traits, s) -> (traits, _datatypes s))
+         (runExcept (runStateT m (TransState { _spec = s, _datatypes = M.empty })))
+    where
+        m = do
+                ifaceTraits <- M.fromList <$> mapM translateIface (M.elems ifaces)
+                dictTraits <- M.fromList <$> mapM translateDict (M.elems dicts)
+                return (ifaceTraits `M.union` dictTraits)
 
 translateIface :: Interface -> Trans (String, Trait)
 translateIface (Interface iname mInherit constructors _attrs gAttrs operations) = do
@@ -42,7 +50,7 @@ translateIface (Interface iname mInherit constructors _attrs gAttrs operations) 
     let tname = unName iname
     case mInherit of
         Just parent -> do
-            ifaces <- _ifaces <$> ask
+            ifaces <- _ifaces . _spec <$> get
             case M.lookup parent ifaces of
                 Just piface -> do -- TODO: optimization
                     Trait _ pattrs pmethods <- snd <$> translateIface piface
@@ -77,7 +85,7 @@ translateDict (Dictionary dname mInherit dmembers) = do
     let methods = M.singleton "new" cons
     case mInherit of
         Just parent -> do
-            dicts <- _dicts <$> ask
+            dicts <- _dicts . _spec <$> get
             case M.lookup parent dicts of
                 Just pdict -> do -- TODO: optimization
                     Trait _ pattrs pmethods <- snd <$> translateDict pdict
@@ -130,7 +138,7 @@ merge (choices:args) = concatMap (\(val, ty) -> map (\(vals, tys) -> (val : vals
 
 notCb :: IType_ -> Trans Bool
 notCb (ITySingle (TyInterface n)) = do
-    cbs <- _cbs <$> ask
+    cbs <- _cbs . _spec <$> get
     case M.lookup n cbs of
         Nothing -> return True
         Just _  -> return False
@@ -152,18 +160,32 @@ iTypeToDyType = \case
 
 makeDatatype :: [IType] -> Trans DyType
 makeDatatype tys = do
-    let tyName = join "Or" (map show tys)
+    let tyName = getUnionIfaceName tys
     let tys' = map iTypeToDyType tys
-    case lookupDatatype tyName of
+    ret <- lookupDatatype tyName
+    case ret of
         Nothing -> registerDatatype tyName (map (\ty -> (tyName ++ "_as_" ++ show ty, ty)) tys')
         Just _ -> return (DTyADT tyName)
 
 registerDatatype :: String -> [(String, DyType)] -> Trans DyType
-registerDatatype = undefined
+registerDatatype tyName constrs = do
+    modify (\s -> s { _datatypes = M.insert tyName constrs (_datatypes s)})
+    return $ DTyADT tyName
 
-getUnionIfaceName :: [IType] -> Name
-getUnionIfaceName = undefined
+getUnionIfaceName :: [IType] -> String
+getUnionIfaceName itys = join "Or" (map flatten itys)
+    where
+        flatten = \case
+            TyInterface (Name x) -> x
+            TyNullable ty -> flatten ty
+            TyBuiltIn (Name x) -> x
+            TyAny -> "Any"
+            TyObject -> "Object"
+            TyBoolean -> "Boolean"
+            TyInt -> "Int"
+            TyFloat -> "Float"
+            TyDOMString -> "DOMString"
+            TyArray _ -> error "doesn't support array type yet"
 
-lookupDatatype = undefined
-
-getADTConsName = undefined
+lookupDatatype :: String -> Trans (Maybe [(String, DyType)])
+lookupDatatype x = M.lookup x <$> _datatypes <$> get

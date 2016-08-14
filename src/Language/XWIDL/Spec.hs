@@ -83,6 +83,7 @@ data InterfaceConstructor = InterfaceConstructor {
     _icRequires :: Maybe String
 } deriving (Eq, Show)
 
+-- optional type? ... yes, now it is a bit weird
 data IType = TyInterface Name
            | TyNullable IType
            | TyBuiltIn Name

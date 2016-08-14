@@ -11,10 +11,12 @@ import Language.WebIDL.Parser
 
 import Language.JS.Type
 import Language.JS.Platform
+import Control.JS.Utils.Server
 
 import Model
 import State
 import Util
+import Type
 
 import Control.Monad.State
 import Control.Monad (forM_)
@@ -33,8 +35,6 @@ import qualified Data.ByteString.Char8 as BC
 
 import System.IO
 import Text.PrettyPrint.Leijen (pretty, Pretty)
-
-startServe = undefined
 
 run :: IO ()
 run = do
@@ -59,7 +59,7 @@ run = do
                     Right spec ->
                         case translateSpec spec of
                             Left e -> warning $ "Translation of spec failed: " ++ e
-                            Right traits -> do
+                            Right (traits, datatypes) -> do
                                 putStrLn "// ------ traits ------- "
                                 mapM_ (print . pretty) traits
 
@@ -70,6 +70,8 @@ run = do
                                     _handler = handler,
                                     _snum = snum,
                                     _traits = traits,
+                                    _traitsNew = Nothing,
+                                    _datatypes = datatypes,
                                     _pDomains = M.fromList m,
                                     _namer = initNamer
                                 })
@@ -151,7 +153,7 @@ handleUnionCall lvar ooc uvals = do
     -- regenerate mono-calls
     let pairs = zip uvals (map _argTy (oocArgs ooc ++ oocOptArgs ooc))
 
-    let calls = merge $ map singlify pairs
+    calls <- merge <$> mapM singlify pairs
 
     forM_ calls $ \(vals, argtys) -> do
         -- compile non-optional arguments
@@ -162,13 +164,15 @@ merge [] = []
 merge [choices] = map (\(val, ty) -> ([val], [ty])) choices
 merge (choices:args) = concatMap (\(val, ty) -> map (\(vals, tys) -> (val : vals, ty: tys)) (merge args)) choices
 
-singlify :: (JsUnionVal, IType_) -> [(JsImmVal, IType)]
-singlify (JsUnionVal [x], ITySingle ty) = [(ImmVal x, ty)] -- no need to fiddling the type if monomorphic
+singlify :: (JsUnionVal, IType_) -> ServeReq [(JsImmVal, IType)]
+singlify (JsUnionVal [x], ITySingle ty) = return [(ImmVal x, ty)] -- no need to fiddling the type if monomorphic
 singlify (JsUnionVal vals, ITyUnion tys)
-    | length vals == length tys =
+    | length vals == length tys = do
         let iname = getUnionIfaceName tys
-            consNames = map (getADTConsName iname) tys
-        in  zip (map (\(consName, val) -> ImmApp consName val) (zip consNames vals)) (repeat (TyInterface iname))
+        consNames <- mapM (getADTConsName iname) tys
+        return $ zip (map (\(consName, val) -> ImmApp consName val)
+                          (zip consNames vals))
+                     (repeat (TyInterface $ Name iname))
 singlify x = error $ "singlify " ++ show x ++ " failed"
 
 data OperationOrConstructor = Op Operation | Cons Name Name InterfaceConstructor
@@ -234,6 +238,11 @@ handleSingleCall lvar ooc vals tys = do
         Just retty -> do -- evaluation, with return value
             jsRetVal <- getJsValResult (DCall x fname args') retty inlineAssCtx
             reply $ Sat (jsRetVal, cbsret)
+
+checkInvocation :: String -> String -> [DyExpr] -> ServeReq Bool
+checkInvocation x fname args = do
+    addStmt (SInvoke x fname args)
+    reportToBool <$> getSat
 
 -- Monoid Assertion Context
 type AssContext = JAssert -> ServeReq Report
@@ -319,7 +328,8 @@ compileNonCbJsVal val = \case
 
 compileIfaceOrDict :: JsVal -> Name -> ServeReq DyExpr
 compileIfaceOrDict jsval iname = do
-    case lookupDefinition iname of
+    mDef <- lookupDefinition iname
+    case mDef of
         Nothing -> throwE $ "Invalid interface name: " ++ show iname
         Just def ->
             case def of
@@ -464,26 +474,10 @@ inferJsValType = \case
     JVClos _ -> throwE $ "can't infer type for callback"
     JVDict _ -> throwE $ "can't infer type for dictionary"
 
-pTyToIType :: PrimType -> IType
-pTyToIType = \case
-    PTyNull -> error "can't infer type for null value"
-    PTyNumber -> TyFloat
-    PTyInt -> TyInt
-    PTyString -> TyDOMString
-    PTyBool -> TyBoolean
-
-
-checkInvocation = undefined
     
 nullJsRetVal :: JsValResult
-nullJsRetVal = undefined
+nullJsRetVal = JVRPrim PTyNull [True]
 
-lookupDefinition :: Name -> Maybe Definition
-lookupDefinition = undefined
-
-
-dyTypeToIType = undefined
-
-
-pTyToDTy = undefined
+getADTConsName :: String -> IType -> ServeReq Name
+getADTConsName = undefined
 

@@ -59,7 +59,6 @@ data DyType = DTyClass String
             | DTyBool
             | DTyReal
             | DTyOpt DyType
-            -- | DTyUnion [DyType]
             | DTyADT String
             deriving (Show)
 

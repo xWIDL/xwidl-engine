@@ -15,6 +15,7 @@ library
                        Session
                        State
                        Util
+                       Type
                        Language.Dafny.AST
                        Language.Dafny.Translate
                        Language.XWIDL.Spec

@@ -33,6 +33,7 @@ data SessionState = SessionState {
     _traits :: M.Map String Trait,
     -- New traits, which will be used as part of code emission if avaiable
     _traitsNew :: Maybe (M.Map String Trait),
+    _datatypes :: M.Map String [(String, DyType)],
     -- Primitive type domains
     _pDomains :: M.Map PrimType [JAssert],
     -- unique namer
@@ -132,6 +133,15 @@ lookupTraits = do
     case tn of
         Just tn -> return tn
         Nothing -> _traits <$> get
+
+lookupDefinition :: Name -> ServeReq (Maybe Definition)
+lookupDefinition name = do
+    spec <- _spec <$> get
+    let f sel = M.lookup name (sel spec)
+    case (f _ifaces, f _dicts) of
+        (Just iface, Nothing) -> return $ Just (DefInterface iface)
+        (Nothing, Just dict)  -> return $ Just (DefDictionary dict)
+        _ -> return Nothing
 
 -- Updates
 updateMethod :: String -> String -> (TraitMemberMethod -> TraitMemberMethod) -> ServeReq ()
