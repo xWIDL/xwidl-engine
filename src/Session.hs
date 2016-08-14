@@ -139,10 +139,9 @@ handleSet lvar name val = do
             _ -> throwE $ "can't set attribute " ++ show name ++ " as " ++ show val
 
     iname <- lvarToIfaceName lvar
-    eReport <- withModifiedMethod (unName iname) fname (modifyEnsures (\_ -> Just ens)) $ do
-        tempTLM $ do
-            addStmt $ SInvoke x fname []
-            getSat
+    eReport <- withCopiedMethod (unName iname) fname (modifyEnsures (\_ -> Just ens)) $ \newFname -> do
+                addStmt $ SInvoke x newFname []
+                getSat
     if reportToBool eReport
         then reply $ Sat (nullJsRetVal, Nothing)
         else reply $ Unsat "Can't set"
@@ -466,6 +465,26 @@ withModifiedMethod tname fname f m = do
         case M.lookup fname mtds of
             Just mtd -> t { _tmethods = M.insert fname (f mtd) mtds }
             Nothing  -> t) m
+
+-- NOTE: has side-effect
+withCopiedMethod :: String -> String -> (TraitMemberMethod -> TraitMemberMethod) ->
+                    (String -> ServeReq Report) -> ServeReq Report
+withCopiedMethod tname baseFname f m = do
+    x <- fresh
+    let newFname = baseFname ++ x
+    modifyTrait tname (\t ->
+        let mtds = _tmethods t in
+        case M.lookup baseFname mtds of
+            Just mtd -> t { _tmethods = M.insert newFname (f (mtd { _tmName = newFname })) mtds }
+            Nothing  -> t) (m newFname)
+
+modifyTrait x f m = do
+    traits <- lookupTraits
+    case M.lookup x traits of
+        Just t -> do
+            modify (\s -> s { _traits = M.insert x (f t) traits })
+            m
+        Nothing -> throwE "Invalid interface name"
 
 -- NOTE: Side-effect free
 withModifiedTrait :: String -> (Trait -> Trait) -> ServeReq a -> ServeReq a

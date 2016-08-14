@@ -76,7 +76,7 @@ lookupAttr i a = do
     ifaces <- _ifaces . _spec <$> get
     case M.lookup i ifaces of
         Just iface ->
-            case M.lookup a (_ghostAttrs iface) of
+            case M.lookup a (_ghostAttrs iface `M.union` _attrs iface) of
                 Just ty -> return ty
                 Nothing -> throwE $ "Invalid attribute " ++ show a ++ " of interface " ++ show i
         Nothing -> throwE $ "Invalid Interface name: " ++ show i
