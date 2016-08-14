@@ -150,15 +150,21 @@ handleGet lvar aname@(Name attr) = do
 handleUnionCall :: LVar -> OperationOrConstructor -> [JsUnionVal] -> ServeReq ()
 handleUnionCall lvar ooc uvals = do
     -- regenerate mono-calls
-    let pairs = zip uvals (map _argTy (oocArgs ooc ++ oocOptArgs ooc))
+    let args = oocArgs ooc ++ oocOptArgs ooc
+    if length uvals /= length args
+        then reply $ InvalidReqeust "Wrong number of arguments"
+        else do
+            let pairs = zip uvals (map _argTy args)
+            logging $ "handleUnionCall-pairs: " ++ show pairs
+            singlified <- mapM singlify pairs
+            logging $ "handleUnionCall-singlified: " ++ show singlified
+            let calls = merge singlified
 
-    calls <- merge <$> mapM singlify pairs
+            logging $ "handleUnionCall-calls: " ++ show calls
 
-    logging $ "handleUnionCall-calls: " ++ show calls
-
-    forM_ calls $ \(vals, argtys) -> do
-        -- compile non-optional arguments
-        handleSingleCall lvar ooc vals argtys
+            forM_ calls $ \(vals, argtys) -> do
+                -- compile non-optional arguments
+                handleSingleCall lvar ooc vals argtys
 
 handleSingleCall :: LVar -> OperationOrConstructor -> [JsImmVal] -> [IType] -> ServeReq ()
 handleSingleCall lvar ooc vals tys = do
