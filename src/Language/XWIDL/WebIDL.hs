@@ -129,12 +129,12 @@ transTypeDef (W.Typedef _ ty i) = do
 transExtAttr :: W.ExtendedAttribute Tag -> Trans ()
 transExtAttr = \case
     W.ExtendedAttributeArgList tag (W.Ident "Constructor") args -> do
-        let (mEns, mReq) = analyzeConsAnn $ _comment tag
+        let (_, mReq) = analyzeConsAnn $ _comment tag
         (args', optArgs') <- partitionArgs <$> mapM transArg args -- XXX: opt args
-        emitConstructor (InterfaceConstructor args' optArgs' mEns mReq)
+        emitConstructor (InterfaceConstructor args' optArgs' mReq)
     W.ExtendedAttributeNoArgs tag (W.Ident "Constructor") -> do
-        let (mEns, mReq) = analyzeConsAnn $ _comment tag
-        emitConstructor (InterfaceConstructor [] [] mEns mReq)
+        let (_, mReq) = analyzeConsAnn $ _comment tag
+        emitConstructor (InterfaceConstructor [] [] mReq)
     W.ExtendedAttributeNoArgs tag (W.Ident "HTMLConstructor") -> emitHTMLConstructor
     _ -> return () -- TODO
 

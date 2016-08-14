@@ -10,10 +10,16 @@ import qualified Data.Map as M
 data Trait = Trait {
     _tname :: String,
     _tattrs :: M.Map String TraitMemberAttr,
+    _tconstrs :: [TraitConstructor],
     _tmethods :: M.Map String TraitMemberMethod
 } deriving (Show)
 
 type TraitMemberAttr = (String, DyType)
+
+data TraitConstructor = TraitConstructor {
+    _tcArgs :: [(String, DyType)],
+    _tcRequires :: Maybe String
+} deriving Show
 
 data TraitMemberMethod = TraitMemberMethod {
     _tmName :: String,
@@ -39,6 +45,7 @@ data DyVal = DVar String
 data DyExpr = DCall String String [DyTerm]
             | DStrRepr String
             | DTerm DyTerm
+            | DNew String [DyTerm]
             deriving (Show)
 
 data DyTerm = DVal DyVal
@@ -66,8 +73,9 @@ data DyType = DTyClass String
 -- Pretty print
 
 instance Pretty Trait where
-    pretty (Trait t ma mm) = text "trait" <+> text t <+>
+    pretty (Trait t ma mc mm) = text "class" <+> text t <+>
                              braces (line <> vsep (map (indent 4 . prettyAttr) (M.elems ma) ++
+                                                   map (indent 4 . pretty) mc ++
                                                    map (indent 4 . pretty) (M.elems mm)) <> line)
 
 instance Pretty TopLevelMethod where
@@ -78,6 +86,12 @@ instance Pretty TopLevelMethod where
             indent 4 (text "requires" <+> (hcat (punctuate (space <> text "&&" <> space) (map pretty requires))))
             else empty) <+>
         braces (line <> vsep (map (\s -> indent 4 (pretty s) <> semi) body) <> line)
+
+instance Pretty TraitConstructor where
+    pretty (TraitConstructor args requires) =
+        text "constructor" <+> 
+        parens (hcat (punctuate (comma <> space) (map prettySig args))) <+>
+        prettyMaybe requires (\req -> indent 4 (text "requires" <+> text req <> line))
 
 instance Pretty TraitMemberMethod where
     pretty (TraitMemberMethod x args mRet ensures requires) =
@@ -107,6 +121,8 @@ instance Pretty DyExpr where
                               parens (hcat (punctuate (comma <> space) (map pretty args)))
     pretty (DStrRepr s) = text s
     pretty (DTerm t) = pretty t
+    pretty (DNew name args) = text "new" <+> text name <>
+                              parens (hcat (punctuate (comma <> space) (map pretty args)))
 
 instance Pretty DyTerm where
     pretty (DVal v) = pretty v

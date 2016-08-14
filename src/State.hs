@@ -81,7 +81,7 @@ lookupAttr i a = do
                 Nothing -> throwE $ "Invalid attribute " ++ show a ++ " of interface " ++ show i
         Nothing -> throwE $ "Invalid Interface name: " ++ show i
 
-lookupCons :: Name -> [IType_] -> ServeReq (String, InterfaceConstructor)
+lookupCons :: Name -> [IType_] -> ServeReq InterfaceConstructor
 lookupCons iname argTypes = do
     ifaces <- _ifaces . _spec <$> get
     case M.lookup iname ifaces of
@@ -89,7 +89,7 @@ lookupCons iname argTypes = do
             let InterfaceConstructors conss = _constructors iface
             let args = zip [(0 :: Int)..] (map _icArgs conss)
             case filter (match . snd) args of
-                (i, _):_ -> return ("new_" ++ show i, conss !! i)
+                (i, _):_ -> return (conss !! i)
                 _ -> throwE $ "Failed to find a proper constructor: " ++ show argTypes
         Nothing -> throwE $ "Invalid Interface name: " ++ show iname
     where

@@ -40,15 +40,15 @@ translateSpec s@(Spec ifaces dicts _ _) =
 
 translateIface :: Interface -> Trans (String, Trait)
 translateIface (Interface iname mInherit constructors _consts attrs gAttrs operations) = do
-    contrs <- case constructors of
-                InterfaceConstructors conss -> M.fromList <$> mapM (translateConstructor iname) (zip [0..] conss)
-                InterfaceHTMLConstructor -> return $ M.singleton "new_def" defConstructor
+    constrs <- case constructors of
+                InterfaceConstructors conss -> mapM translateConstructor conss
+                InterfaceHTMLConstructor -> return [defConstructor]
     tms <- mapM translateMethod (M.elems operations)
     let tmsMap = M.fromList $ map (\t -> (_tmName t, t)) tms
     let setters = M.fromList $ map (\(x, ty) -> let fname = "set_" ++ unName x
                                                 in  (fname, defSetter fname))
                                    (M.toList attrs)
-    let methods = contrs `M.union` tmsMap `M.union` setters
+    let methods = tmsMap `M.union` setters
     let allAttrs = M.fromList $ map (\(x, ty) -> (unName x, (unName x, iTypeToDyType ty)))
                                  (M.toList gAttrs ++ M.toList attrs)
     let tname = unName iname
@@ -57,18 +57,15 @@ translateIface (Interface iname mInherit constructors _consts attrs gAttrs opera
             ifaces <- _ifaces . _spec <$> get
             case M.lookup parent ifaces of
                 Just piface -> do -- TODO: optimization
-                    Trait _ pattrs pmethods <- snd <$> translateIface piface
-                    return (tname, Trait tname (pattrs `M.union` allAttrs) (pmethods `M.union` methods))
+                    Trait _ pattrs pcons pmethods <- snd <$> translateIface piface
+                    return (tname, Trait tname (pattrs `M.union` allAttrs) (pcons ++ constrs) (pmethods `M.union` methods))
                 Nothing -> throwError $ "Invalid inheritance: " ++ show parent
         Nothing ->
-            return (tname, Trait tname allAttrs methods)
+            return (tname, Trait tname allAttrs constrs methods)
     where
-        defConstructor = TraitMemberMethod {
-            _tmName = "new_def",
-            _tmArgs = [],
-            _tmRet = Just ("ret", DTyClass (unName iname)),
-            _tmEnsures = Nothing, -- XXX: maybe ret != null?
-            _tmRequires = Nothing
+        defConstructor = TraitConstructor {
+            _tcArgs = [],
+            _tcRequires = Nothing
         }
 
         defSetter fname = TraitMemberMethod {
@@ -86,39 +83,32 @@ translateDict (Dictionary dname mInherit dmembers) = do
                                  dmembers
 
     let tname = unName dname
-    let bindAttrsStr = join " && " (map (\k -> "ret." ++ k ++ " == " ++ k) (M.keys attrs))
+    -- let bindAttrsStr = join " && " (map (\k -> "ret." ++ k ++ " == " ++ k) (M.keys attrs))
+    -- XXX: fix dictionary binding
     -- constructor
-    let cons = TraitMemberMethod {
-                    _tmName = "new_def",
-                    _tmArgs = M.elems attrs,
-                    _tmRet  = Just ("ret", DTyClass (unName dname)),
-                    _tmEnsures = Just ("ret != null && " ++ bindAttrsStr),
-                    _tmRequires = Nothing
+    let cons = TraitConstructor {
+                    _tcArgs = M.elems attrs,
+                    _tcRequires = Nothing
                 }
-    let methods = M.singleton "new_def" cons
     case mInherit of
         Just parent -> do
             dicts <- _dicts . _spec <$> get
             case M.lookup parent dicts of
                 Just pdict -> do -- TODO: optimization
-                    Trait _ pattrs pmethods <- snd <$> translateDict pdict
-                    return (tname, Trait tname (pattrs `M.union` attrs) pmethods)
+                    Trait _ pattrs pcons pmethods <- snd <$> translateDict pdict
+                    return (tname, Trait tname (pattrs `M.union` attrs) (cons:pcons) pmethods)
                 Nothing -> throwError $ "Invalid inheritance: " ++ show parent
         Nothing ->
-            return (tname, Trait tname attrs methods)
+            return (tname, Trait tname attrs [cons] M.empty)
 
-translateConstructor :: Name -> (Int, InterfaceConstructor) -> Trans (String, TraitMemberMethod)
-translateConstructor iname (idx, InterfaceConstructor{..}) = do
-    args <- mapM (\(Argument x ity _) -> (unName x,) <$> iType_ToDyType ity) _icArgs    
-    let tmName = "new_" ++ show idx
-    let tmm = TraitMemberMethod {
-            _tmName = tmName,
-            _tmArgs = args,
-            _tmRet  = Just ("ret", DTyClass (unName iname)),
-            _tmEnsures = _icEnsures,
-            _tmRequires = _icRequires
+translateConstructor :: InterfaceConstructor -> Trans TraitConstructor
+translateConstructor InterfaceConstructor{..} = do
+    args <- mapM (\(Argument x ity _) -> (unName x,) <$> iType_ToDyType ity) _icArgs
+    -- XXX: optional args
+    return TraitConstructor {
+            _tcArgs = args,
+            _tcRequires = _icRequires
     }
-    return (tmName, tmm)
 
 translateMethod :: Operation -> Trans TraitMemberMethod
 translateMethod Operation{..} = do
@@ -159,6 +149,7 @@ iTypeToDyType = \case
     TyNullable (TyInterface x) -> DTyClass (unName x)
     TyInt -> DTyInt
     TyFloat -> DTyReal
+    TyBoolean -> DTyBool
     ty -> error $ "Can't translate Type: " ++ show ty
 
 makeDatatype :: [IType] -> Trans DyType

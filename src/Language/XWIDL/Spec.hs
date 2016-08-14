@@ -82,7 +82,6 @@ data Argument = Argument {
 data InterfaceConstructor = InterfaceConstructor {
     _icArgs :: [Argument],
     _icOptArgs :: [Argument],
-    _icEnsures :: Maybe String,
     _icRequires :: Maybe String
 } deriving (Eq, Show)
 

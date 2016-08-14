@@ -128,27 +128,19 @@ handleSet :: LVar -> Name -> JsVal -> ServeReq ()
 handleSet lvar name val = do
     x <- compileLVar lvar
     let aNameStr = unName name
-    let fname = "set_" ++ aNameStr
-    
-    ens <- case val of
-            JVRef r -> do
-                y <- lookupBinding r
-                return $ "this." ++ aNameStr ++ " == " ++ y
-            JVPrim pty jass -> do
-                return $ prettyShow $ app jass (Name $ "this." ++ aNameStr)
-            _ -> throwE $ "can't set attribute " ++ show name ++ " as " ++ show val
-
     iname <- lvarToIfaceName lvar
-    eReport <- withCopiedMethod (unName iname) fname (modifyEnsures (\_ -> Just ens)) $ \newFname -> do
-                addStmt $ SInvoke x newFname []
-                getSat
+    ix <- compileLVar (LInterface iname)
+    eReport <- do
+                    fname <- addValueMethod (unName iname) val
+                    addStmt $ SVarAssign (x ++ "." ++ aNameStr) (DCall ix fname [])
+                    getSat
     if reportToBool eReport
         then reply $ Sat (nullJsRetVal, Nothing)
         else reply $ Unsat "Can't set"
 
 handleNewDef :: Name -> ServeReq ()
 handleNewDef iname = do
-    jsRetVal <- getJsValResult (DCall (unName iname) "new_def" [])
+    jsRetVal <- getJsValResult (DNew (unName iname) [])
                                (TyInterface iname)
                                (\_ -> error "Unreachable")
     reply $ Sat (jsRetVal, Nothing)
@@ -156,9 +148,8 @@ handleNewDef iname = do
 handleNewCons :: Name -> [JsUnionVal] -> ServeReq ()
 handleNewCons iname uvals = do
     types <- mapM inferJsUnionValType uvals
-    (consName, cons) <- lookupCons iname types
-    logging "handleNewCons: get cons"
-    handleUnionCall (LInterface iname) (Cons iname (Name consName) cons) uvals
+    cons <- lookupCons iname types
+    handleUnionCall (LInterface iname) (Cons iname cons) uvals
 
 handleGet :: LVar -> Name -> ServeReq ()
 handleGet lvar name@(Name nameStr) = do
@@ -225,18 +216,22 @@ handleSingleCall lvar ooc vals tys = do
 
     -- compile value replies
     x <- compileLVar lvar
-    let fname = unName (oocName ooc)
     case oocRet ooc of
         Nothing -> do -- invocation, no return value
-            ret <- checkInvocation x fname args'
+            let Op op = ooc
+            ret <- checkInvocation x (unName $ _imName op) args'
             if ret
                 then reply $ Sat (nullJsRetVal, cbsret)
                 else reply $ Unsat "Invalid invocation"
         Just retty -> do -- evaluation, with return value
             tmArgs <- mapM exprToTerm args'
-            jsRetVal <- getJsValResult (DCall x fname tmArgs)
+            let e = case ooc of
+                        Op op -> DCall x (unName $ _imName op) tmArgs
+                        Cons iname cons -> DNew (unName iname) tmArgs
+            logging $ "handleSingleCall: " ++ show e ++ ", retty: " ++ show retty
+            jsRetVal <- getJsValResult e
                                        retty
-                                       (inlineAssCtx (DCall x fname tmArgs))
+                                       (inlineAssCtx e)
             reply $ Sat (jsRetVal, cbsret)
 
 checkInvocation :: String -> String -> [DyExpr] -> ServeReq Bool
@@ -280,7 +275,8 @@ compileCbs :: LVar -> OperationOrConstructor -> [DyExpr] -> [CallbackTriple] -> 
 compileCbs lvar ooc noncbargs cbs = do
     logging $ "compileCbs-cbs: " ++ show cbs
     iname <- unName <$> lvarToIfaceName lvar
-    let fname = unName (oocName ooc)
+    let Op op = ooc -- XXX: need to support constructor?
+    let fname = unName $ _imName op
     let checkSat = do
                         f <- fresh
                         x <- compileLVar lvar
@@ -415,7 +411,7 @@ queryCallbackSpec :: OperationOrConstructor -> Name -> CallbackSpec
 queryCallbackSpec ooc x = 
     case ooc of
         Op op -> head $ filter (\(CallbackSpec x' _ _) -> x' == x) (_imCbs op)
-        Cons _ _ _ -> error "can't query constructor for callback"
+        Cons _ _ -> error "can't query constructor for callback"
 
 getSat :: ServeReq Report
 getSat = do
@@ -456,6 +452,28 @@ domainsToAssertions domAsses =
 
 -- reply :: Reply -> Session ()
 reply r = (_handler <$> get) >>= \hd -> liftIO (ePutLine hd r)
+
+addValueMethod :: String -> JsVal -> ServeReq String
+addValueMethod iname val = do
+    ens <- case val of
+            JVRef r -> do
+                y <- lookupBinding r
+                return $ "ret == " ++ y
+            JVPrim pty jass -> do
+                return $ prettyShow $ app jass (Name "ret")
+            _ -> throwE $ "can't set attribute as " ++ show val
+    fname <- fresh
+    ty <- iTypeToDyType <$> inferJsValType val
+    let mtd = TraitMemberMethod {
+        _tmName = fname,
+        _tmArgs = [],
+        _tmRet  = Just ("ret", ty),
+        _tmEnsures = Just ens,
+        _tmRequires = Nothing
+    }
+    modifyTrait iname (\t -> t { _tmethods = M.insert fname mtd (_tmethods t) }) (return ())
+    return fname
+
 
 -- NOTE: Side-effect free
 withModifiedMethod :: String -> String -> (TraitMemberMethod -> TraitMemberMethod) -> ServeReq Report -> ServeReq Report
@@ -550,23 +568,19 @@ singlify (JsUnionVal vals, ITyUnion tys)
                      (repeat (TyInterface $ Name iname))
 singlify x = error $ "singlify " ++ show x ++ " failed"
 
-data OperationOrConstructor = Op Operation | Cons Name Name InterfaceConstructor
+data OperationOrConstructor = Op Operation | Cons Name InterfaceConstructor
 
 oocArgs :: OperationOrConstructor -> [Argument]
 oocArgs (Op op) = _imArgs op
-oocArgs (Cons _ _ cons) = _icArgs cons
+oocArgs (Cons _ cons) = _icArgs cons
 
 oocOptArgs :: OperationOrConstructor -> [Argument]
 oocOptArgs (Op op) = _imOptArgs op
-oocOptArgs (Cons _ _ cons) = _icOptArgs cons
-
-oocName :: OperationOrConstructor -> Name
-oocName (Op op) = _imName op
-oocName (Cons _ consName _) = consName
+oocOptArgs (Cons _ cons) = _icOptArgs cons
 
 oocRet :: OperationOrConstructor -> Maybe IType
 oocRet (Op op) = _imRet op
-oocRet (Cons iname _ _) = Just $ TyInterface iname
+oocRet (Cons iname _) = Just $ TyInterface iname
 
 data JsImmVal = ImmVal JsVal
               | ImmApp Name JsVal
