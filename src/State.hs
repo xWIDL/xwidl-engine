@@ -107,7 +107,8 @@ lookupPlatObj iname = do
         Just _  -> return vname
         Nothing -> do
             addArg vname (DTyClass (unName iname))
-            addRequire (DRel NotEqual (DVal (DVar vname)) (DVal (DPrim PNull)))
+            addRequire (DTerm (DRel NotEqual (DVal (DVar vname))
+                                             (DVal (DPrim PNull))))
             return vname
 
 lookupOperationWithLvar fname lvar =

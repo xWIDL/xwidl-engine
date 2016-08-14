@@ -86,7 +86,7 @@ run = do
         initTargetMethod = TopLevelMethod {
             _tlName = "Main",
             _tlArgs = M.singleton "cb" (DTyClass "CallbackTrait"),
-            _tlRequires = [DRel NotEqual (DVal (DVar "cb")) (DVal (DPrim PNull))],
+            _tlRequires = [DTerm (DRel NotEqual (DVal (DVar "cb")) (DVal (DPrim PNull)))],
             _tlBody = []
         }
 
@@ -145,7 +145,8 @@ handleGet lvar aname@(Name attr) = do
     iname <- lvarToIfaceName lvar
     ty <- lookupAttr iname aname
     x <- compileLVar lvar
-    jsValRet <- getJsValResult (DAccess x attr) ty (inlineAssCtx (DAccess x attr))
+    jsValRet <- getJsValResult (DTerm (DAccess x attr))
+                               ty (inlineAssCtx (DTerm (DAccess x attr)))
     reply $ Sat (jsValRet, Nothing)
 
 handleUnionCall :: LVar -> OperationOrConstructor -> [JsUnionVal] -> ServeReq ()
@@ -179,7 +180,7 @@ handleSingleCall lvar ooc vals tys = do
                                             JVClos n -> do
                                                 let cbspec = queryCallbackSpec ooc argn
                                                 cb <- lookupCb ty
-                                                return [Left  (DVal (DVar "cb")),
+                                                return [Left  (DTerm (DVal (DVar "cb"))),
                                                         Right (n, cbspec, cb)]
                                             val -> (\v -> [Left v]) <$> compileNonCbJsVal val ty
                                 case val of
@@ -188,9 +189,11 @@ handleSingleCall lvar ooc vals tys = do
                                         -- (ls, rs) <- partitionEithers <$> f val
                                         -- return (map (\e -> Left (DApp (unName fname) [e])) ls ++ map Right rs))
     let nnonopt = nargs - nopts
+    args'' <- mapM (\a -> exprToTerm a >>= \a' -> return (DTerm (DApp "Some" [a'])))
+                   (drop nnonopt args)
     let args' = take nnonopt args ++
-                map (\a -> DApp "Some" [a]) (drop nnonopt args) ++
-                take (nargs - length args) (repeat $ DVal (DVar "None"))
+                args'' ++
+                take (nargs - length args) (repeat $ DTerm (DVal (DVar "None")))
 
     -- comopile callback replies
     cbsret <- if cbs == [] then return Nothing else Just <$> compileCbs lvar ooc args' cbs
@@ -205,12 +208,16 @@ handleSingleCall lvar ooc vals tys = do
                 then reply $ Sat (nullJsRetVal, cbsret)
                 else reply $ Unsat "Invalid invocation"
         Just retty -> do -- evaluation, with return value
-            jsRetVal <- getJsValResult (DCall x fname args') retty (inlineAssCtx (DCall x fname args'))
+            tmArgs <- mapM exprToTerm args'
+            jsRetVal <- getJsValResult (DCall x fname tmArgs)
+                                       retty
+                                       (inlineAssCtx (DCall x fname tmArgs))
             reply $ Sat (jsRetVal, cbsret)
 
 checkInvocation :: String -> String -> [DyExpr] -> ServeReq Bool
 checkInvocation x fname args = do
-    addStmt (SInvoke x fname args)
+    tmArgs <- mapM exprToTerm args
+    addStmt (SInvoke x fname tmArgs)
     reportToBool <$> getSat
 
 
@@ -254,7 +261,8 @@ compileCbs lvar ooc noncbargs cbs = do
                         x <- compileLVar lvar
                         lhs <- fresh
                         tempTLM $ do
-                            addStmt (SVarDef lhs (DCall x fname noncbargs))
+                            tmArgs <- mapM exprToTerm noncbargs
+                            addStmt (SVarDef lhs (DCall x fname tmArgs))
                             getSat
 
     mBranchs <- forM cbs $ \(n, CallbackSpec _ reqe withEs, cb) -> do
@@ -302,7 +310,8 @@ compileIfaceOrDictOrADT jsval iname = do
                     ty <- inferJsValType jsval
                     let consName = getADTConsName (unName iname) ty
                     innerE <- compileNonCbJsVal jsval ty
-                    return $ DApp consName [innerE]
+                    innerTm <- exprToTerm innerE
+                    return (DTerm $ DApp consName [innerTm])
                 Nothing -> 
                     throwE $ "Invalid definition name: " ++ show iname
         Just def ->
@@ -316,7 +325,7 @@ compileIface :: JsVal -> Interface -> ServeReq DyExpr
 compileIface (JVRef jref) iface = do
      JsObj iname <- lookupObj jref
      if iname == _iName iface
-        then (DVal . DVar) <$> lookupBinding jref
+        then (DTerm . DVal . DVar) <$> lookupBinding jref
         else throwE $ "Inconsistency between jref and iface type"
 compileIface otherval _ = throwE $ "Invalid jsval for interface: " ++ show otherval
 
@@ -330,8 +339,9 @@ compileDict (JVDict m) dict = do
                                 Nothing -> throwE $ "No such member " ++ show name ++
                                                     " in dictionary " ++ show (_dname dict)
                                 Just ty -> compileNonCbJsVal jsval (dyTypeToIType ty)
-
-    return (DCall (unName (_dname dict)) "new_def" dyexprs)
+    x <- lookupPlatObj (_dname dict)
+    dytms <- mapM exprToTerm dyexprs
+    return (DCall x "new_def" dytms)
 
 compileDict otherval _ = throwE $ "Invalid jsval for dictionary: " ++ show otherval
 
@@ -342,7 +352,7 @@ compilePrim (JVPrim pty assert) _ = do
     de <- compileExpr je
     addArg x (pTyToDTy pty)
     addRequire de
-    return (DVal (DVar x))
+    return (DTerm (DVal (DVar x)))
 
 compileLVar :: LVar -> ServeReq String
 compileLVar = \case
@@ -350,10 +360,14 @@ compileLVar = \case
     LInterface iname -> lookupPlatObj iname
 
 compileExpr :: JsExpr -> ServeReq DyExpr
-compileExpr (JEVar x) = return (DVal $ DVar (unName x))
-compileExpr (JEPrim prim) = return $ DVal (DPrim prim)
+compileExpr (JEVar x) = return (DTerm (DVal $ DVar (unName x)))
+compileExpr (JEPrim prim) = return (DTerm (DVal (DPrim prim)))
 compileExpr (JEBinary op e1 e2) = do
-    DRel op <$> compileExpr e1 <*> compileExpr e2
+    e1' <- compileExpr e1
+    e2' <- compileExpr e2
+    tm1 <- exprToTerm e1'
+    tm2 <- exprToTerm e2'
+    return (DTerm (DRel op tm1 tm2))
 compileExpr other = throwE $ "Can't compile Expr " ++ show other
 
 -- Misc
@@ -395,7 +409,7 @@ getSat = do
 reportToBool :: Report -> Bool
 reportToBool = \case
     Verified -> True
-    Failed   -> False
+    Failed _ -> False
 
 domainsToAssertions :: [JAssert] -> [(JAssert, [Bool])]
 domainsToAssertions domAsses =
@@ -523,3 +537,11 @@ pprintDatatypes m = unlines $ map pprintDatatype (M.toList m)
     where
         pprintDatatype (tyName, constrs) = "datatype " ++ tyName ++ " = " ++ join " | " (map pprintConstr constrs)
         pprintConstr (consName, ty) = toUpperFirst consName ++ "(" ++ toUpperFirst consName ++ " : " ++ prettyShow ty ++ ")"
+
+exprToTerm :: DyExpr -> ServeReq DyTerm
+exprToTerm (DTerm tm) = return tm
+exprToTerm other = do
+    x <- fresh
+    addStmt (SVarDef x other)
+    return (DVal (DVar x))
+

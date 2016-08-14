@@ -36,18 +36,21 @@ data DyVal = DVar String
            -- | DSeq [DyVal]
            deriving (Show)
 
-data DyExpr = DVal DyVal
-            | DCall String String [DyExpr]
-            | DApp String [DyExpr]
-            | DAccess String String
-            | DRel RelBiOp DyExpr DyExpr
+data DyExpr = DCall String String [DyTerm]
             | DStrRepr String
+            | DTerm DyTerm
             deriving (Show)
+
+data DyTerm = DVal DyVal
+            | DApp String [DyTerm]
+            | DAccess String String
+            | DRel RelBiOp DyTerm DyTerm
+            deriving Show
 
 data Stmt = SVarDecl String DyType -- var x : <type>;
           | SVarDef String DyExpr -- var x := <expr>;
           | SVarAssign String DyExpr -- x := <expr>;
-          | SInvoke String String [DyExpr] -- x.f([<expr>]);
+          | SInvoke String String [DyTerm] -- x.f([<expr>]);
           | SAssert DyExpr -- assert <expr>;
           deriving (Show)
 
@@ -100,13 +103,16 @@ instance Pretty DyType where
     pretty (DTyADT x) = text x
 
 instance Pretty DyExpr where
-    pretty (DVal v) = pretty v
     pretty (DCall x f args) = text x <> text "." <> text f <>
                               parens (hcat (punctuate (comma <> space) (map pretty args)))
+    pretty (DStrRepr s) = text s
+    pretty (DTerm t) = pretty t
+
+instance Pretty DyTerm where
+    pretty (DVal v) = pretty v
     pretty (DApp f args) = text f <> parens (hcat (punctuate (comma <> space) (map pretty args)))
     pretty (DAccess x attr) = text (x ++ "." ++ attr)
     pretty (DRel op a b) = pretty a <+> pretty op <+> pretty b
-    pretty (DStrRepr s) = text s
 
 instance Pretty DyVal where
     pretty (DVar x) = text x

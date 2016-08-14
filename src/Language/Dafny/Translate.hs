@@ -75,12 +75,13 @@ translateDict (Dictionary dname mInherit dmembers) = do
                                  dmembers
 
     let tname = unName dname
+    let bindAttrsStr = join " && " (map (\k -> "ret." ++ k ++ " == " ++ k) (M.keys attrs))
     -- constructor
     let cons = TraitMemberMethod {
                     _tmName = "new_def",
                     _tmArgs = M.elems attrs,
                     _tmRet  = Just ("ret", DTyClass (unName dname)),
-                    _tmEnsures = Nothing,
+                    _tmEnsures = Just ("ret != null && " ++ bindAttrsStr),
                     _tmRequires = Nothing
                 }
     let methods = M.singleton "new_def" cons
