@@ -479,5 +479,12 @@ nullJsRetVal :: JsValResult
 nullJsRetVal = JVRPrim PTyNull [True]
 
 getADTConsName :: String -> IType -> ServeReq Name
-getADTConsName = undefined
-
+getADTConsName tyName ty = do
+    datatypes <- _datatypes <$> get
+    case M.lookup tyName datatypes of
+        Nothing -> throwE $ "Invalid type name for getting ADT constructor: " ++ tyName
+        Just constrs ->
+            case filter (\(name, ty') -> iTypeToDyType ty == ty') constrs of
+                (name, _):[] -> return $ Name name
+                _ -> throwE $ "Invalid constr type for getting ADT constructor: " ++
+                              show ty ++ " in " ++ tyName

@@ -60,7 +60,7 @@ data DyType = DTyClass String
             | DTyReal
             | DTyOpt DyType
             | DTyADT String
-            deriving (Show)
+            deriving (Show, Eq)
 
 -- Pretty print
 
