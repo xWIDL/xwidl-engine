@@ -39,15 +39,18 @@ translateSpec s@(Spec ifaces dicts _ _) =
                 return (ifaceTraits `M.union` dictTraits)
 
 translateIface :: Interface -> Trans (String, Trait)
-translateIface (Interface iname mInherit constructors _consts _attrs gAttrs operations) = do
+translateIface (Interface iname mInherit constructors _consts attrs gAttrs operations) = do
     contrs <- case constructors of
                 InterfaceConstructors conss -> M.fromList <$> mapM (translateConstructor iname) (zip [0..] conss)
                 InterfaceHTMLConstructor -> return $ M.singleton "new_def" defConstructor
     tms <- mapM translateMethod (M.elems operations)
     let tmsMap = M.fromList $ map (\t -> (_tmName t, t)) tms
-    let methods = contrs `M.union` tmsMap
-    let attrs = M.fromList $ map (\(x, ty) -> (unName x, (unName x, iTypeToDyType ty)))
-                                 (M.toList gAttrs)
+    let setters = M.fromList $ map (\(x, ty) -> let fname = "set_" ++ unName x
+                                                in  (fname, defSetter fname))
+                                   (M.toList attrs)
+    let methods = contrs `M.union` tmsMap `M.union` setters
+    let allAttrs = M.fromList $ map (\(x, ty) -> (unName x, (unName x, iTypeToDyType ty)))
+                                 (M.toList gAttrs ++ M.toList attrs)
     let tname = unName iname
     case mInherit of
         Just parent -> do
@@ -55,16 +58,24 @@ translateIface (Interface iname mInherit constructors _consts _attrs gAttrs oper
             case M.lookup parent ifaces of
                 Just piface -> do -- TODO: optimization
                     Trait _ pattrs pmethods <- snd <$> translateIface piface
-                    return (tname, Trait tname (pattrs `M.union` attrs) (pmethods `M.union` methods))
+                    return (tname, Trait tname (pattrs `M.union` allAttrs) (pmethods `M.union` methods))
                 Nothing -> throwError $ "Invalid inheritance: " ++ show parent
         Nothing ->
-            return (tname, Trait tname attrs methods)
+            return (tname, Trait tname allAttrs methods)
     where
         defConstructor = TraitMemberMethod {
             _tmName = "new_def",
             _tmArgs = [],
             _tmRet = Just ("ret", DTyClass (unName iname)),
             _tmEnsures = Nothing, -- XXX: maybe ret != null?
+            _tmRequires = Nothing
+        }
+
+        defSetter fname = TraitMemberMethod {
+            _tmName = fname,
+            _tmArgs = [],
+            _tmRet  = Nothing,
+            _tmEnsures = Nothing,
             _tmRequires = Nothing
         }
 

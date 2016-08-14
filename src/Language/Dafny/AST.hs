@@ -118,17 +118,6 @@ instance Pretty DyVal where
     pretty (DVar x) = text x
     pretty (DPrim p) = pretty p
 
-instance Pretty RelBiOp where
-    pretty = \case
-        NotEqual -> text "!="
-        Equal -> text "=="
-        And -> text "&&"
-        Or -> text "||"
-        LessThan -> text "<"
-        LessEq -> text "<="
-        GreaterThan -> text ">"
-        GreaterEq -> text ">="
-
 instance Pretty Stmt where
     pretty (SVarDef x e) = text "var" <+> text x <+> text ":=" <+> pretty e
     pretty (SVarDecl x cls) = text "var" <+> text x <+> text ":" <+> pretty cls

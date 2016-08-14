@@ -124,9 +124,28 @@ dispatch = \case
     CEnd -> return False
     _ -> reply (InvalidReqeust "Invalid cmd") >> return True
 
--- This is a non-trivial featuring, needing the enhancement of Dafny codegen module
 handleSet :: LVar -> Name -> JsVal -> ServeReq ()
-handleSet lvar name val = reply (InvalidReqeust "set is not supported yet")
+handleSet lvar name val = do
+    x <- compileLVar lvar
+    let aNameStr = unName name
+    let fname = "set_" ++ aNameStr
+    
+    ens <- case val of
+            JVRef r -> do
+                y <- lookupBinding r
+                return $ "this." ++ aNameStr ++ " == " ++ y
+            JVPrim pty jass -> do
+                return $ prettyShow $ app jass (Name $ "this." ++ aNameStr)
+            _ -> throwE $ "can't set attribute " ++ show name ++ " as " ++ show val
+
+    iname <- lvarToIfaceName lvar
+    eReport <- withModifiedMethod (unName iname) fname (modifyEnsures (\_ -> Just ens)) $ do
+        tempTLM $ do
+            addStmt $ SInvoke x fname []
+            getSat
+    if reportToBool eReport
+        then reply $ Sat (nullJsRetVal, Nothing)
+        else reply $ Unsat "Can't set"
 
 handleNewDef :: Name -> ServeReq ()
 handleNewDef iname = do
@@ -380,15 +399,18 @@ compileExpr other = throwE $ "Can't compile Expr " ++ show other
 -- Misc
 
 andRequires :: String -> TraitMemberMethod -> TraitMemberMethod
-andRequires r m = modifyRequires m (\case
-                                        Just s  -> Just ("(" ++ s ++ ") && " ++ r)
-                                        Nothing -> Just r)
+andRequires r = modifyRequires (\case
+                                    Just s  -> Just ("(" ++ s ++ ") && " ++ r)
+                                    Nothing -> Just r)
 
 letBindRequires :: String -> DyExpr -> TraitMemberMethod -> TraitMemberMethod
-letBindRequires x e m = modifyRequires m (fmap (\s -> "var " ++ x ++ " := " ++ prettyShow e ++ "; (" ++ s ++ ")"))
+letBindRequires x e = modifyRequires (fmap (\s -> "var " ++ x ++ " := " ++ prettyShow e ++ "; (" ++ s ++ ")"))
 
-modifyRequires :: TraitMemberMethod -> (Maybe String -> Maybe String) -> TraitMemberMethod
-modifyRequires m f = m { _tmRequires = f (_tmRequires m) }
+modifyRequires :: (Maybe String -> Maybe String) -> TraitMemberMethod -> TraitMemberMethod
+modifyRequires f m = m { _tmRequires = f (_tmRequires m) }
+
+modifyEnsures :: (Maybe String -> Maybe String) -> TraitMemberMethod -> TraitMemberMethod
+modifyEnsures f m = m { _tmEnsures = f (_tmEnsures m) }
 
 queryCallbackSpec :: OperationOrConstructor -> Name -> CallbackSpec
 queryCallbackSpec ooc x = 
