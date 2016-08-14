@@ -48,10 +48,11 @@ run = do
         logging $ "Creating session #" ++ show snum
         
         Just (CBoot (Domains m) idl) <- eGetLine handler
-        preludeIDL <- readFile "prelude.idl"
         logging $ "Get domains: " ++ show m
 
-        case parseIDL (preludeIDL ++ "\n" ++ idl) of
+        prelude <- readFile "prelude.dfy"
+
+        case parseIDL idl of
             Left e -> warning $ "Parse of IDL failde: " ++ show e
             Right idlAST ->
                 case transDefsToSpec idlAST of
@@ -73,6 +74,7 @@ run = do
                                     _traitsNew = Nothing,
                                     _datatypes = datatypes,
                                     _pDomains = M.fromList m,
+                                    _prelude = prelude,
                                     _namer = initNamer
                                 })
                                 logging $ "Ending session #" ++ show snum
@@ -353,7 +355,8 @@ getSat = do
     tlm <- _tlm <$> get
     traits <- lookupTraits
     modify (\s -> s { _names = M.empty, _traitsNew = Nothing })
-    let src = unlines (map (show . pretty) $ M.elems traits) ++ "\n" ++ show (pretty tlm)
+    prelude <- _prelude <$> get
+    let src = prelude ++ "\n" ++ unlines (map (show . pretty) $ M.elems traits) ++ "\n" ++ show (pretty tlm)
     logging ("Getting sat from REST...tlm: \n" ++ src)
     ans <- liftIO $ askDafny (Local "/home/zhangz/xwidl/dafny/Binaries") src
     case ans of

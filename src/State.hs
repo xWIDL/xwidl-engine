@@ -38,6 +38,7 @@ data SessionState = SessionState {
     _pDomains :: M.Map PrimType [JAssert],
     -- unique namer
     _namer :: Namer,
+    _prelude :: String,
     -- name table
     _names :: M.Map Name String
 }
