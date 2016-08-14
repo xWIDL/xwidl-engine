@@ -62,7 +62,7 @@ transDef = \case
 transCallback :: W.Callback Tag -> Trans ()
 transCallback (W.Callback _ i retty args) = do
     retty' <- transRet retty
-    (args', _) <- partitionEithers <$> mapM transArg args -- XXX: opt args
+    (args', _) <- partitionArgs <$> mapM transArg args -- XXX: opt args
     replaceFocus $ DefCallback (Callback (i2n i) retty' args')
 
 transIface :: W.Interface Tag -> Trans ()
@@ -131,7 +131,7 @@ transExtAttr :: W.ExtendedAttribute Tag -> Trans ()
 transExtAttr = \case
     W.ExtendedAttributeArgList tag (W.Ident "Constructor") args -> do
         let (mEns, mReq) = analyzeConsAnn $ _comment tag
-        (args', optArgs') <- partitionEithers <$> mapM transArg args -- XXX: opt args
+        (args', optArgs') <- partitionArgs <$> mapM transArg args -- XXX: opt args
         emitConstructor (InterfaceConstructor args' optArgs' mEns mReq)
     W.ExtendedAttributeNoArgs tag (W.Ident "Constructor") -> do
         let (mEns, mReq) = analyzeConsAnn $ _comment tag
@@ -155,7 +155,7 @@ transIfaceAttr (W.Attribute tag _mInheritModifier _mReadOnlyModifer ty x) = do
 transIfaceOp :: W.Operation Tag -> Trans ()
 transIfaceOp (W.Operation tag _extAttrs _mQualifier ret (Just f) args) = do
     (mEns, mReq, cbs) <- analyzeOpAnn $ _comment tag
-    (args', optArgs') <- partitionEithers <$> mapM transArg args
+    (args', optArgs') <- partitionArgs <$> mapM transArg args
     ret' <- transRet ret
     emitOp $ Operation (i2n f) args' optArgs' ret' mEns mReq cbs
 transIfaceOp _ = error "Special operations are not supported yet"
@@ -230,14 +230,22 @@ transPrimType = \case
     W.Byte              -> return (TyBuiltIn $ Name "Byte")
     W.Octet             -> return (TyBuiltIn $ Name "Octet")
 
-transArg :: W.Argument Tag -> Trans (Either Argument Argument)
+data ArgType = NonOpt Argument
+             | Opt Argument
+
+partitionArgs :: [ArgType] -> ([Argument], [Argument])
+partitionArgs [] = ([], [])
+partitionArgs (Opt arg:rest) = let (args, optargs) = partitionArgs rest in (args, arg:optargs)
+partitionArgs (NonOpt arg:rest) = let (args, optargs) = partitionArgs rest in (arg:args, optargs)
+
+transArg :: W.Argument Tag -> Trans ArgType
 transArg = \case
     W.ArgOptional _extAttrs ty (W.ArgIdent x) mDefault -> do
         ty' <- transType ty
-        return $ Left (Argument (i2n x) ty' mDefault)
+        return $ Opt (Argument (i2n x) ty' mDefault)
     W.ArgNonOpt _extAttrs ty _mEllipsis (W.ArgIdent x) -> do
         ty' <- transType ty
-        return $ Right (Argument (i2n x) ty' Nothing)
+        return $ NonOpt (Argument (i2n x) ty' Nothing)
     _ -> error "ArgKey is not supported yet"
 
 inspectAttrComment :: [String] -> Trans ()

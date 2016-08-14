@@ -113,7 +113,7 @@ translateMethod Operation{..} = do
     let argss = mapArg iTypeToDyType args
     let optargss = mapArg (DTyOpt . iTypeToDyType) optargs
     let argss' = argss ++ optargss
-    let retty = fmap (\ty -> ("eret", iTypeToDyType ty)) _imRet
+    let retty = fmap (\ty -> ("ret", iTypeToDyType ty)) _imRet
     forM (merge argss') $ \args'' -> do
         return TraitMemberMethod {
             _tmName = unName _imName,

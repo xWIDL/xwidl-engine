@@ -144,7 +144,7 @@ handleGet lvar aname@(Name attr) = do
     iname <- lvarToIfaceName lvar
     ty <- lookupAttr iname aname
     x <- compileLVar lvar
-    jsValRet <- getJsValResult (DAccess x attr) ty inlineAssCtx
+    jsValRet <- getJsValResult (DAccess x attr) ty (inlineAssCtx (DAccess x attr))
     reply $ Sat (jsValRet, Nothing)
 
 handleUnionCall :: LVar -> OperationOrConstructor -> [JsUnionVal] -> ServeReq ()
@@ -200,7 +200,7 @@ handleSingleCall lvar ooc vals tys = do
                 then reply $ Sat (nullJsRetVal, cbsret)
                 else reply $ Unsat "Invalid invocation"
         Just retty -> do -- evaluation, with return value
-            jsRetVal <- getJsValResult (DCall x fname args') retty inlineAssCtx
+            jsRetVal <- getJsValResult (DCall x fname args') retty (inlineAssCtx (DCall x fname args'))
             reply $ Sat (jsRetVal, cbsret)
 
 checkInvocation :: String -> String -> [DyExpr] -> ServeReq Bool
@@ -218,10 +218,10 @@ getJsValResult dyexpr ty ctx =
         TyBuiltIn iname -> getObjResult iname
         TyAny -> getObjResult (Name "Any")
         TyObject -> getObjResult (Name "Object")
-        TyBoolean -> getPrimResult PTyBool dyexpr ctx
-        TyInt -> getPrimResult PTyInt dyexpr ctx
-        TyFloat -> getPrimResult PTyNumber dyexpr ctx
-        TyDOMString -> getPrimResult PTyString dyexpr ctx
+        TyBoolean -> getPrimResult PTyBool ctx
+        TyInt -> getPrimResult PTyInt ctx
+        TyFloat -> getPrimResult PTyNumber ctx
+        TyDOMString -> getPrimResult PTyString ctx
         TyArray _ -> throwE $ "array is not supported yet"
     where
         getObjResult iname = do
@@ -229,8 +229,8 @@ getJsValResult dyexpr ty ctx =
             addStmt (SVarDef vname dyexpr)
             return $ (JVRRef r)
 
-getPrimResult :: PrimType -> DyExpr -> AssContext -> ServeReq JsValResult
-getPrimResult pty de ctx = do
+getPrimResult :: PrimType -> AssContext -> ServeReq JsValResult
+getPrimResult pty ctx = do
     domainMap <- _pDomains <$> get
     let Just domains = M.lookup pty domainMap
     let assertions = domainsToAssertions domains
@@ -365,7 +365,7 @@ getSat = do
     prelude <- _prelude <$> get
     let src = prelude ++ "\n" ++ unlines (map (show . pretty) $ M.elems traits) ++ "\n" ++ show (pretty tlm)
     logging ("Getting sat from REST...tlm: \n" ++ src)
-    ans <- liftIO $ askDafny REST src
+    ans <- liftIO $ askDafny (Local "/home/zhangz/xwidl/dafny/Binaries") src
     case ans of
         Right ret -> do
             logging ("Got sat: " ++ show ret)
@@ -443,13 +443,22 @@ getADTConsName tyName ty = do
                 _ -> throwE $ "Invalid constr type for getting ADT constructor: " ++
                               show ty ++ " in " ++ tyName
 
-inlineAssCtx :: AssContext
-inlineAssCtx jass = do
+inlineAssCtx :: DyExpr -> AssContext
+inlineAssCtx de jass = do
     x <- fresh
     let je = app jass (Name x)
-    de <- compileExpr je
-    addStmt $ SAssert de
-    getSat
+    asse <- compileExpr je
+    tempTLM $ do
+        addStmt $ SVarDef x de
+        addStmt $ SAssert asse
+        getSat
+
+tempTLM :: ServeReq a -> ServeReq a
+tempTLM m = do
+    tlm <- _tlm <$> get
+    a <- m
+    modify (\s -> s { _tlm = tlm })
+    return a
 
 merge :: [[(JsImmVal, IType)]] -> [([JsImmVal], [IType])]
 merge [] = [([], [])]
