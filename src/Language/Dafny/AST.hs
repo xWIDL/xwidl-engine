@@ -97,6 +97,7 @@ instance Pretty DyType where
     pretty DTyBool = text "bool"
     pretty DTyReal = text "real"
     pretty (DTyOpt t) = text "Option<" <> pretty t <> text ">"
+    pretty (DTyADT x) = text x
 
 instance Pretty DyExpr where
     pretty (DVal v) = pretty v

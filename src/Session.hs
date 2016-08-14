@@ -18,13 +18,14 @@ import State
 import Util
 import Type
 
-import Control.Monad.State
+import Control.Monad.State hiding (join)
 import Control.Monad (forM_)
 import Control.Monad.Trans.Except
 
 import qualified Data.Map as M
 import Data.Maybe (fromJust, isJust)
 import Data.Char (toLower)
+import Data.String.Utils
 import Data.Atomics.Counter
 import Data.Aeson
 import Data.Either (partitionEithers)
@@ -60,7 +61,7 @@ run = do
                 case transDefsToSpec idlAST of
                     Left e -> warning $ "Translation of IDL failde: " ++ show e
                     Right spec -> do
-                        logging "Spec is ready."
+                        logging $ "Spec is ready: " ++ show spec
                         case translateSpec spec of
                             Left e -> warning $ "Translation of spec failed: " ++ e
                             Right (traits, datatypes) -> do
@@ -183,9 +184,9 @@ handleSingleCall lvar ooc vals tys = do
                                             val -> (\v -> [Left v]) <$> compileNonCbJsVal val ty
                                 case val of
                                     ImmVal val -> f val
-                                    ImmApp fname val -> do
-                                        (ls, rs) <- partitionEithers <$> f val
-                                        return (map (\e -> Left (DApp (unName fname) [e])) ls ++ map Right rs))
+                                    ImmApp fname val -> f val)
+                                        -- (ls, rs) <- partitionEithers <$> f val
+                                        -- return (map (\e -> Left (DApp (unName fname) [e])) ls ++ map Right rs))
     let nnonopt = nargs - nopts
     let args' = take nnonopt args ++
                 map (\a -> DApp "Some" [a]) (drop nnonopt args) ++
@@ -279,22 +280,31 @@ compileCbs lvar ooc noncbargs cbs = do
 
 compileNonCbJsVal :: JsVal -> IType -> ServeReq DyExpr
 compileNonCbJsVal val = \case
-    TyInterface i -> compileIfaceOrDict val i
+    TyInterface i -> compileIfaceOrDictOrADT val i
     TyDOMString -> compilePrim val PTyString
     TyInt -> compilePrim val PTyInt
     TyFloat -> compilePrim val PTyNumber
-    TyAny -> compileIfaceOrDict val (Name "Any")
+    TyAny -> compileIfaceOrDictOrADT val (Name "Any")
     TyNullable ty -> compileNonCbJsVal val ty
     TyBoolean -> compilePrim val PTyBool
-    TyObject -> compileIfaceOrDict val (Name "Object")
-    TyBuiltIn i -> compileIfaceOrDict val i
+    TyObject -> compileIfaceOrDictOrADT val (Name "Object")
+    TyBuiltIn i -> compileIfaceOrDictOrADT val i
     TyArray _ -> throwE "array type is not supported yet"
 
-compileIfaceOrDict :: JsVal -> Name -> ServeReq DyExpr
-compileIfaceOrDict jsval iname = do
+compileIfaceOrDictOrADT :: JsVal -> Name -> ServeReq DyExpr
+compileIfaceOrDictOrADT jsval iname = do
     mDef <- lookupDefinition iname
     case mDef of
-        Nothing -> throwE $ "Invalid interface name: " ++ show iname
+        Nothing -> do
+            datatypes <- _datatypes <$> get
+            case M.lookup (unName iname) datatypes of
+                Just _ -> do
+                    ty <- inferJsValType jsval
+                    let consName = getADTConsName (unName iname) ty
+                    innerE <- compileNonCbJsVal jsval ty
+                    return $ DApp consName [innerE]
+                Nothing -> 
+                    throwE $ "Invalid definition name: " ++ show iname
         Just def ->
             case def of
                 DefInterface iface -> compileIface jsval iface
@@ -367,11 +377,13 @@ queryCallbackSpec ooc x =
 
 getSat :: ServeReq Report
 getSat = do
+    datatypes <- _datatypes <$> get
     tlm <- _tlm <$> get
     traits <- lookupTraits
     modify (\s -> s { _names = M.empty, _traitsNew = Nothing })
     prelude <- _prelude <$> get
-    let src = prelude ++ "\n" ++ unlines (map (show . pretty) $ M.elems traits) ++ "\n" ++ show (pretty tlm)
+    let src = prelude ++ "\n" ++ pprintDatatypes datatypes ++ "\n" ++
+              unlines (map prettyShow $ M.elems traits) ++ "\n" ++ show (pretty tlm)
     logging ("Getting sat from REST...tlm: \n" ++ src)
     ans <- liftIO $ askDafny (Local "/home/zhangz/xwidl/dafny/Binaries") src
     case ans of
@@ -440,16 +452,8 @@ inferJsValType = \case
 nullJsRetVal :: JsValResult
 nullJsRetVal = JVRPrim PTyNull [True]
 
-getADTConsName :: String -> IType -> ServeReq Name
-getADTConsName tyName ty = do
-    datatypes <- _datatypes <$> get
-    case M.lookup tyName datatypes of
-        Nothing -> throwE $ "Invalid type name for getting ADT constructor: " ++ tyName
-        Just constrs ->
-            case filter (\(name, ty') -> iTypeToDyType ty == ty') constrs of
-                (name, _):[] -> return $ Name name
-                _ -> throwE $ "Invalid constr type for getting ADT constructor: " ++
-                              show ty ++ " in " ++ tyName
+getADTConsName :: String -> IType -> String
+getADTConsName tyName ty = tyName ++ "." ++ toUpperFirst (prettyShow ty)
 
 inlineAssCtx :: DyExpr -> AssContext
 inlineAssCtx de jass = do
@@ -476,10 +480,10 @@ merge (choices:args) = concatMap (\(val, ty) -> map (\(vals, tys) -> (val : vals
 singlify :: (JsUnionVal, IType_) -> ServeReq [(JsImmVal, IType)]
 singlify (JsUnionVal [x], ITySingle ty) = return [(ImmVal x, ty)] -- no need to fiddling the type if monomorphic
 singlify (JsUnionVal vals, ITyUnion tys)
-    | length vals == length tys = do
+    | length vals <= length tys = do
         let iname = getUnionIfaceName tys
-        consNames <- mapM (getADTConsName iname) tys
-        return $ zip (map (\(consName, val) -> ImmApp consName val)
+        let consNames = map (getADTConsName iname) tys
+        return $ zip (map (\(consName, val) -> ImmApp (Name consName) val)
                           (zip consNames vals))
                      (repeat (TyInterface $ Name iname))
 singlify x = error $ "singlify " ++ show x ++ " failed"
@@ -513,3 +517,9 @@ type CallbackTriple = ( Int -- arity
                       , CallbackSpec -- spec
                       , Callback -- AST node
                       )
+
+pprintDatatypes :: M.Map String [(String, DyType)] -> String
+pprintDatatypes m = unlines $ map pprintDatatype (M.toList m)
+    where
+        pprintDatatype (tyName, constrs) = "datatype " ++ tyName ++ " = " ++ join " | " (map pprintConstr constrs)
+        pprintConstr (consName, ty) = toUpperFirst consName ++ "(" ++ toUpperFirst consName ++ " : " ++ prettyShow ty ++ ")"

@@ -6,6 +6,8 @@ import Language.JS.Type
 import qualified Data.Map as M
 import qualified Language.WebIDL.AST as W
 
+import Text.PrettyPrint.Leijen
+
 data Spec = Spec {
     _ifaces     :: M.Map Name Interface,
     _dicts      :: M.Map Name Dictionary,
@@ -95,3 +97,16 @@ data IType = TyInterface Name
 data IType_ = ITyUnion [IType]
             | ITySingle IType
             deriving (Eq, Show)
+
+instance Pretty IType where
+  pretty = \case
+    TyInterface (Name x) -> text x
+    TyNullable ty -> pretty ty
+    TyBuiltIn (Name x) -> text x
+    TyAny -> text "Any"
+    TyObject -> text "Object"
+    TyBoolean -> text "Boolean"
+    TyInt -> text "Int"
+    TyFloat -> text "Float"
+    TyDOMString -> text "DOMString"
+    TyArray _ -> error "doesn't support TyArray yet"

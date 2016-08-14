@@ -12,6 +12,8 @@ import Data.String.Utils
 
 import qualified Data.Map as M
 
+import Util
+
 import Control.Monad (filterM)
 import Control.Monad.State hiding (join)
 import Control.Monad.Except hiding (join)
@@ -41,7 +43,7 @@ translateIface (Interface iname mInherit constructors _attrs gAttrs operations) 
     contrs <- case constructors of
                 InterfaceConstructors conss -> M.fromList <$> mapM (translateConstructor iname) (zip [0..] conss)
                 InterfaceHTMLConstructor -> return $ M.singleton "new_def" defConstructor
-    tms <- concat <$> mapM translateMethod (M.elems operations)
+    tms <- mapM translateMethod (M.elems operations)
     let tmsMap = M.fromList $ map (\t -> (_tmName t, t)) tms
     let methods = contrs `M.union` tmsMap
     let attrs = M.fromList $ map (\(x, ty) -> (unName x, (unName x, iTypeToDyType ty)))
@@ -106,33 +108,23 @@ translateConstructor iname (idx, InterfaceConstructor{..}) = do
     }
     return (tmName, tmm)
 
-translateMethod :: Operation -> Trans [TraitMemberMethod]
+translateMethod :: Operation -> Trans TraitMemberMethod
 translateMethod Operation{..} = do
     cbs <- _cbs . _spec <$> get
-    let argss = mapArg iTypeToDyType $ map (replaceCb cbs) _imArgs
-    let optargss = mapArg (DTyOpt . iTypeToDyType) $ map (replaceCb cbs) _imOptArgs
-    let argss' = argss ++ optargss
+    
+    args <- mapM (\(Argument x ity _) -> (unName x,) <$> iType_ToDyType ity) $ map (replaceCb cbs) _imArgs
+    optargs <- mapM (\(Argument x ity _) -> (unName x,) . DTyOpt <$> iType_ToDyType ity) $ map (replaceCb cbs) _imOptArgs
+
+    let args' = args ++ optargs
     let retty = fmap (\ty -> ("ret", iTypeToDyType ty)) _imRet
-    forM (merge argss') $ \args'' -> do
-        return TraitMemberMethod {
-            _tmName = unName _imName,
-            _tmArgs = zip (fst args'') (snd args''),
-            _tmRet  = retty,
-            _tmEnsures = _imEnsures,
-            _tmRequires = _imRequires
-        }
-
-mapArg :: (IType -> DyType) -> [Argument] -> [[(String, DyType)]]
-mapArg f args = map (\(Argument name ty _) ->
-                        case ty of
-                            ITySingle ty' -> [(unName name, f ty')]
-                            ITyUnion tys  -> map (\ty' -> (unName name, f ty')) tys)
-                    args
-
-merge :: [[(String, DyType)]] -> [([String], [DyType])]
-merge [] = [([], [])]
-merge [choices] = map (\(val, ty) -> ([val], [ty])) choices
-merge (choices:args) = concatMap (\(val, ty) -> map (\(vals, tys) -> (val : vals, ty: tys)) (merge args)) choices
+    
+    return TraitMemberMethod {
+        _tmName = unName _imName,
+        _tmArgs = args',
+        _tmRet  = retty,
+        _tmEnsures = _imEnsures,
+        _tmRequires = _imRequires
+    }
 
 replaceCb :: M.Map Name Callback -> Argument -> Argument
 replaceCb cbs arg = do
@@ -159,11 +151,11 @@ iTypeToDyType = \case
 
 makeDatatype :: [IType] -> Trans DyType
 makeDatatype tys = do
-    let tyName = getUnionIfaceName tys
+    let tyName = getUnionIfaceName tys -- XXX: use prettyShow
     let tys' = map iTypeToDyType tys
     ret <- lookupDatatype tyName
     case ret of
-        Nothing -> registerDatatype tyName (map (\ty -> (tyName ++ "_as_" ++ show ty, ty)) tys')
+        Nothing -> registerDatatype tyName (map (\ty -> (prettyShow ty, ty)) tys')
         Just _ -> return (DTyADT tyName)
 
 registerDatatype :: String -> [(String, DyType)] -> Trans DyType
@@ -172,19 +164,7 @@ registerDatatype tyName constrs = do
     return $ DTyADT tyName
 
 getUnionIfaceName :: [IType] -> String
-getUnionIfaceName itys = join "Or" (map flatten itys)
-    where
-        flatten = \case
-            TyInterface (Name x) -> x
-            TyNullable ty -> flatten ty
-            TyBuiltIn (Name x) -> x
-            TyAny -> "Any"
-            TyObject -> "Object"
-            TyBoolean -> "Boolean"
-            TyInt -> "Int"
-            TyFloat -> "Float"
-            TyDOMString -> "DOMString"
-            TyArray _ -> error "doesn't support array type yet"
+getUnionIfaceName itys = join "Or" (map prettyShow itys)
 
 lookupDatatype :: String -> Trans (Maybe [(String, DyType)])
 lookupDatatype x = M.lookup x <$> _datatypes <$> get
