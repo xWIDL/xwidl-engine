@@ -132,14 +132,6 @@ handleNewCons iname uvals = do
     (consName, cons) <- lookupCons iname types
     handleUnionCall (LInterface iname) (Cons iname (Name consName) cons) uvals
 
-inlineAssCtx :: AssContext
-inlineAssCtx jass = do
-    x <- fresh
-    let je = app jass (Name x)
-    de <- compileExpr je
-    addStmt $ SAssert de
-    getSat
-
 handleGet :: LVar -> Name -> ServeReq ()
 handleGet lvar aname@(Name attr) = do
     iname <- lvarToIfaceName lvar
@@ -158,43 +150,6 @@ handleUnionCall lvar ooc uvals = do
     forM_ calls $ \(vals, argtys) -> do
         -- compile non-optional arguments
         handleSingleCall lvar ooc vals argtys
-
-merge :: [[(JsImmVal, IType)]] -> [([JsImmVal], [IType])]
-merge [] = []
-merge [choices] = map (\(val, ty) -> ([val], [ty])) choices
-merge (choices:args) = concatMap (\(val, ty) -> map (\(vals, tys) -> (val : vals, ty: tys)) (merge args)) choices
-
-singlify :: (JsUnionVal, IType_) -> ServeReq [(JsImmVal, IType)]
-singlify (JsUnionVal [x], ITySingle ty) = return [(ImmVal x, ty)] -- no need to fiddling the type if monomorphic
-singlify (JsUnionVal vals, ITyUnion tys)
-    | length vals == length tys = do
-        let iname = getUnionIfaceName tys
-        consNames <- mapM (getADTConsName iname) tys
-        return $ zip (map (\(consName, val) -> ImmApp consName val)
-                          (zip consNames vals))
-                     (repeat (TyInterface $ Name iname))
-singlify x = error $ "singlify " ++ show x ++ " failed"
-
-data OperationOrConstructor = Op Operation | Cons Name Name InterfaceConstructor
-
-oocArgs :: OperationOrConstructor -> [Argument]
-oocArgs (Op op) = _imArgs op
-oocArgs (Cons _ _ cons) = _icArgs cons
-
-oocOptArgs :: OperationOrConstructor -> [Argument]
-oocOptArgs (Op op) = _imOptArgs op
-oocOptArgs (Cons _ _ cons) = _icOptArgs cons
-
-oocName :: OperationOrConstructor -> Name
-oocName (Op op) = _imName op
-oocName (Cons _ consName _) = consName
-
-oocRet :: OperationOrConstructor -> Maybe IType
-oocRet (Op op) = _imRet op
-oocRet (Cons iname _ _) = Just $ TyInterface iname
-
-data JsImmVal = ImmVal JsVal
-              | ImmApp Name JsVal
 
 handleSingleCall :: LVar -> OperationOrConstructor -> [JsImmVal] -> [IType] -> ServeReq ()
 handleSingleCall lvar ooc vals tys = do
@@ -217,7 +172,7 @@ handleSingleCall lvar ooc vals tys = do
                                         case lr of
                                             Left e -> return $ Left $ DApp (unName fname) [e]
                                             Right _ -> return lr)
-                                
+
     let nnonopt = nargs - nopts
     let args' = take nnonopt args ++
                 map DSome (drop nnonopt args) ++
@@ -244,8 +199,6 @@ checkInvocation x fname args = do
     addStmt (SInvoke x fname args)
     reportToBool <$> getSat
 
--- Monoid Assertion Context
-type AssContext = JAssert -> ServeReq Report
 
 -- If nothing, means failed
 getJsValResult :: DyExpr -> IType -> AssContext -> ServeReq JsValResult
@@ -274,12 +227,6 @@ getPrimResult pty de ctx = do
     let assertions = domainsToAssertions domains
     (_, flags) <- head <$> flip filterM assertions (\(assert, _) -> reportToBool <$> ctx assert)
     return (JVRPrim pty flags)
-
-
-type CallbackTriple = ( Int -- arity
-                      , CallbackSpec -- spec
-                      , Callback -- AST node
-                      )
 
 compileCbs :: LVar -> OperationOrConstructor -> [DyExpr] -> [CallbackTriple] -> ServeReq JsCallbackResult
 compileCbs lvar ooc noncbargs cbs = do
@@ -435,7 +382,6 @@ domainsToAssertions domAsses =
         conj' (e:[]) = e
         conj' (e:es) = JEBinary Or e (conj' es)
 
-
 -- reply :: Reply -> Session ()
 reply r = (_handler <$> get) >>= \hd -> liftIO (ePutLine hd r)
 
@@ -464,7 +410,6 @@ inferJsUnionValType :: JsUnionVal -> ServeReq IType_
 inferJsUnionValType (JsUnionVal [val]) = ITySingle <$> inferJsValType val
 inferJsUnionValType (JsUnionVal vals) = ITyUnion <$> mapM inferJsValType vals
 
-
 inferJsValType :: JsVal -> ServeReq IType
 inferJsValType = \case
     JVRef r -> do
@@ -473,7 +418,6 @@ inferJsValType = \case
     JVPrim pty _ -> return $ pTyToIType pty
     JVClos _ -> throwE $ "can't infer type for callback"
     JVDict _ -> throwE $ "can't infer type for dictionary"
-
     
 nullJsRetVal :: JsValResult
 nullJsRetVal = JVRPrim PTyNull [True]
@@ -488,3 +432,56 @@ getADTConsName tyName ty = do
                 (name, _):[] -> return $ Name name
                 _ -> throwE $ "Invalid constr type for getting ADT constructor: " ++
                               show ty ++ " in " ++ tyName
+
+inlineAssCtx :: AssContext
+inlineAssCtx jass = do
+    x <- fresh
+    let je = app jass (Name x)
+    de <- compileExpr je
+    addStmt $ SAssert de
+    getSat
+
+merge :: [[(JsImmVal, IType)]] -> [([JsImmVal], [IType])]
+merge [] = []
+merge [choices] = map (\(val, ty) -> ([val], [ty])) choices
+merge (choices:args) = concatMap (\(val, ty) -> map (\(vals, tys) -> (val : vals, ty: tys)) (merge args)) choices
+
+singlify :: (JsUnionVal, IType_) -> ServeReq [(JsImmVal, IType)]
+singlify (JsUnionVal [x], ITySingle ty) = return [(ImmVal x, ty)] -- no need to fiddling the type if monomorphic
+singlify (JsUnionVal vals, ITyUnion tys)
+    | length vals == length tys = do
+        let iname = getUnionIfaceName tys
+        consNames <- mapM (getADTConsName iname) tys
+        return $ zip (map (\(consName, val) -> ImmApp consName val)
+                          (zip consNames vals))
+                     (repeat (TyInterface $ Name iname))
+singlify x = error $ "singlify " ++ show x ++ " failed"
+
+data OperationOrConstructor = Op Operation | Cons Name Name InterfaceConstructor
+
+oocArgs :: OperationOrConstructor -> [Argument]
+oocArgs (Op op) = _imArgs op
+oocArgs (Cons _ _ cons) = _icArgs cons
+
+oocOptArgs :: OperationOrConstructor -> [Argument]
+oocOptArgs (Op op) = _imOptArgs op
+oocOptArgs (Cons _ _ cons) = _icOptArgs cons
+
+oocName :: OperationOrConstructor -> Name
+oocName (Op op) = _imName op
+oocName (Cons _ consName _) = consName
+
+oocRet :: OperationOrConstructor -> Maybe IType
+oocRet (Op op) = _imRet op
+oocRet (Cons iname _ _) = Just $ TyInterface iname
+
+data JsImmVal = ImmVal JsVal
+              | ImmApp Name JsVal
+
+-- Monoid Assertion Context
+type AssContext = JAssert -> ServeReq Report
+
+type CallbackTriple = ( Int -- arity
+                      , CallbackSpec -- spec
+                      , Callback -- AST node
+                      )

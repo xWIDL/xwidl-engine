@@ -31,7 +31,6 @@ transDefsToSpec defs = do
                 replaceFocus dummyDef
                 )
     let defsMap = M.delete dummyName (_emitted s)
-    -- ((a0 -> b0 -> b0) -> b0 -> t0 a0 -> b0))
     return (foldr distribute (Spec M.empty M.empty M.empty M.empty) (M.toList defsMap))
     where
         initState = TransState {
