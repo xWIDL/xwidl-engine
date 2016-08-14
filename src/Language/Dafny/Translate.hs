@@ -2,8 +2,7 @@
 {-# LANGUAGE TupleSections #-}
 
 module Language.Dafny.Translate (
-    translateSpec, getUnionIfaceName,
-    iTypeToDyType
+    translateSpec, getUnionIfaceName, iTypeToDyType
 ) where
 
 import Language.XWIDL.Spec
@@ -29,7 +28,7 @@ data TransState = TransState {
 
 translateSpec :: Spec -> Either String (M.Map String Trait, Datatypes)
 translateSpec s@(Spec ifaces dicts _ _) =
-    fmap (\(traits, s) -> (traits, _datatypes s))
+    fmap (\(traits, s') -> (traits, _datatypes s'))
          (runExcept (runStateT m (TransState { _spec = s, _datatypes = M.empty })))
     where
         m = do
@@ -113,9 +112,9 @@ translateMethod Operation{..} = do
     optargs <- filterM (notCb . _argTy) _imOptArgs
     let argss = mapArg iTypeToDyType args
     let optargss = mapArg (DTyOpt . iTypeToDyType) optargs
-    let argss = argss ++ optargss
+    let argss' = argss ++ optargss
     let retty = fmap (\ty -> ("eret", iTypeToDyType ty)) _imRet
-    forM (merge argss) $ \args'' -> do
+    forM (merge argss') $ \args'' -> do
         return TraitMemberMethod {
             _tmName = unName _imName,
             _tmArgs = zip (fst args'') (snd args''),
@@ -132,7 +131,7 @@ mapArg f args = map (\(Argument name ty _) ->
                     args
 
 merge :: [[(String, DyType)]] -> [([String], [DyType])]
-merge [] = []
+merge [] = [([], [])]
 merge [choices] = map (\(val, ty) -> ([val], [ty])) choices
 merge (choices:args) = concatMap (\(val, ty) -> map (\(vals, tys) -> (val : vals, ty: tys)) (merge args)) choices
 

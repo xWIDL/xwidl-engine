@@ -39,9 +39,9 @@ import Text.PrettyPrint.Leijen (pretty, Pretty)
 run :: IO ()
 run = do
     counter <- newCounter 0
-    hSetBuffering stdout NoBuffering
     logging "Engine launched, waiting for connection"
     startServe $ \handler -> do
+        hSetBuffering stdout NoBuffering
         hSetBuffering handler NoBuffering
 
         snum <- incrCounter 1 counter
@@ -51,13 +51,16 @@ run = do
         logging $ "Get domains: " ++ show m
 
         prelude <- readFile "prelude.dfy"
+        logging "Prelude Dafny loaded."
 
         case parseIDL idl of
             Left e -> warning $ "Parse of IDL failde: " ++ show e
-            Right idlAST ->
+            Right idlAST -> do
+                logging "IDL is parsed."
                 case transDefsToSpec idlAST of
                     Left e -> warning $ "Translation of IDL failde: " ++ show e
-                    Right spec ->
+                    Right spec -> do
+                        logging "Spec is ready."
                         case translateSpec spec of
                             Left e -> warning $ "Translation of spec failed: " ++ e
                             Right (traits, datatypes) -> do
@@ -88,18 +91,19 @@ run = do
 
 loop :: Session ()
 loop = do
+    logging "loop..."
     handler <- _handler <$> get
     mCmd <- liftIO $ eGetLine handler
     case mCmd of
         Just cmd -> do
-            logging $ "> Request " ++ show cmd
+            logging $ "Request " ++ show cmd
             eErr <- runExceptT (dispatch cmd)
             case eErr of
                 Right continue | continue     -> loop
                                | not continue -> return ()
                 Left errMsg -> reply (InvalidReqeust errMsg) >> loop
         Nothing -> do
-            warning $ "> Invalid request"
+            warning $ "Invalid request"
             reply (InvalidReqeust $ show mCmd)
             loop
 
@@ -132,6 +136,7 @@ handleNewCons :: Name -> [JsUnionVal] -> ServeReq ()
 handleNewCons iname uvals = do
     types <- mapM inferJsUnionValType uvals
     (consName, cons) <- lookupCons iname types
+    logging "handleNewCons: get cons"
     handleUnionCall (LInterface iname) (Cons iname (Name consName) cons) uvals
 
 handleGet :: LVar -> Name -> ServeReq ()
@@ -148,6 +153,8 @@ handleUnionCall lvar ooc uvals = do
     let pairs = zip uvals (map _argTy (oocArgs ooc ++ oocOptArgs ooc))
 
     calls <- merge <$> mapM singlify pairs
+
+    logging $ "handleUnionCall-calls: " ++ show calls
 
     forM_ calls $ \(vals, argtys) -> do
         -- compile non-optional arguments
@@ -358,7 +365,7 @@ getSat = do
     prelude <- _prelude <$> get
     let src = prelude ++ "\n" ++ unlines (map (show . pretty) $ M.elems traits) ++ "\n" ++ show (pretty tlm)
     logging ("Getting sat from REST...tlm: \n" ++ src)
-    ans <- liftIO $ askDafny (Local "/home/zhangz/xwidl/dafny/Binaries") src
+    ans <- liftIO $ askDafny REST src
     case ans of
         Right ret -> do
             logging ("Got sat: " ++ show ret)
@@ -445,7 +452,7 @@ inlineAssCtx jass = do
     getSat
 
 merge :: [[(JsImmVal, IType)]] -> [([JsImmVal], [IType])]
-merge [] = []
+merge [] = [([], [])]
 merge [choices] = map (\(val, ty) -> ([val], [ty])) choices
 merge (choices:args) = concatMap (\(val, ty) -> map (\(vals, tys) -> (val : vals, ty: tys)) (merge args)) choices
 
@@ -480,6 +487,7 @@ oocRet (Cons iname _ _) = Just $ TyInterface iname
 
 data JsImmVal = ImmVal JsVal
               | ImmApp Name JsVal
+              deriving Show
 
 -- Monoid Assertion Context
 type AssContext = JAssert -> ServeReq Report
