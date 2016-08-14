@@ -20,7 +20,7 @@ library
                        Language.Dafny.Translate
                        Language.XWIDL.Spec
                        Language.XWIDL.WebIDL
-  default-extensions:  RecordWildCards, LambdaCase, FlexibleContexts
+  default-extensions:  RecordWildCards, LambdaCase, FlexibleContexts, TupleSections
   -- other-modules:       
   -- other-extensions:    
   build-depends:       base >=4.9 && <4.10, containers >=0.5 && <0.6,

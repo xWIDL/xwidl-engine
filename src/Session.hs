@@ -359,10 +359,14 @@ compileDict (JVDict m) dict = do
                             case M.lookup (unName name) args of
                                 Nothing -> throwE $ "No such member " ++ show name ++
                                                     " in dictionary " ++ show (_dname dict)
-                                Just ty -> compileNonCbJsVal jsval (dyTypeToIType ty)
+                                Just ty -> (name,) <$> compileNonCbJsVal jsval (dyTypeToIType ty)
     x <- lookupPlatObj (_dname dict)
-    dytms <- mapM exprToTerm dyexprs
-    return (DCall x "new_def" dytms)
+    -- dyexprs
+    dx <- fresh
+    addStmt (SVarDef dx (DNew (unName $ _dname dict) []))
+    forM_ dyexprs $ \(name, de) -> do
+        addStmt (SVarAssign (dx ++ "." ++ unName name) de)
+    return $ DTerm (DVal (DVar dx))
 
 compileDict otherval _ = throwE $ "Invalid jsval for dictionary: " ++ show otherval
 

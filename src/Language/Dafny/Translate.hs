@@ -87,7 +87,7 @@ translateDict (Dictionary dname mInherit dmembers) = do
     -- XXX: fix dictionary binding
     -- constructor
     let cons = TraitConstructor {
-                    _tcArgs = M.elems attrs,
+                    _tcArgs = [],
                     _tcRequires = Nothing
                 }
     case mInherit of
