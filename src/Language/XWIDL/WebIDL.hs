@@ -129,12 +129,12 @@ transTypeDef (W.Typedef _ ty i) = do
 transExtAttr :: W.ExtendedAttribute Tag -> Trans ()
 transExtAttr = \case
     W.ExtendedAttributeArgList tag (W.Ident "Constructor") args -> do
-        let (_, mReq) = analyzeConsAnn $ _comment tag
+        let (_, mReq, mEff) = analyzeConsAnn $ _comment tag
         (args', optArgs') <- partitionArgs <$> mapM transArg args -- XXX: opt args
-        emitConstructor (InterfaceConstructor args' optArgs' mReq)
+        emitConstructor (InterfaceConstructor args' optArgs' mReq mEff)
     W.ExtendedAttributeNoArgs tag (W.Ident "Constructor") -> do
-        let (_, mReq) = analyzeConsAnn $ _comment tag
-        emitConstructor (InterfaceConstructor [] [] mReq)
+        let (_, mReq, mEff) = analyzeConsAnn $ _comment tag
+        emitConstructor (InterfaceConstructor [] [] mReq mEff)
     W.ExtendedAttributeNoArgs tag (W.Ident "HTMLConstructor") -> emitHTMLConstructor
     _ -> return () -- TODO
 
@@ -153,10 +153,10 @@ transIfaceAttr (W.Attribute tag _mInheritModifier _mReadOnlyModifer ty x) = do
 -- If an operation has no identifier, then it must be declared to be a special operation using one of the special keywords.
 transIfaceOp :: W.Operation Tag -> Trans ()
 transIfaceOp (W.Operation tag _extAttrs _mQualifier ret (Just f) args) = do
-    (mEns, mReq, cbs) <- analyzeOpAnn $ _comment tag
+    (mEns, mReq, mEff, cbs) <- analyzeOpAnn $ _comment tag
     (args', optArgs') <- partitionArgs <$> mapM transArg args
     ret' <- transRet ret
-    emitOp $ Operation (i2n f) args' optArgs' ret' mEns mReq cbs
+    emitOp $ Operation (i2n f) args' optArgs' ret' mEns mReq mEff cbs
 transIfaceOp _ = error "Special operations are not supported yet"
 
 transDictMember :: W.DictionaryMember Tag -> Trans DictionaryMember
@@ -260,19 +260,22 @@ inspectAttrComment = mapM_ collectGhostAttr .
                 Left err -> throwError $ "Parse ghost attribute error: " ++ show err
         isGhostAttrComment  = startswith "/- ghost" . strip
 
-analyzeConsAnn :: [String] -> (Maybe String, Maybe String)
-analyzeConsAnn lns = let (e, r, _) = analyzeFunAnn lns in (e, r)
+analyzeConsAnn :: [String] -> (Maybe String, Maybe String, Maybe String)
+analyzeConsAnn lns = let (e, r, eff, _) = analyzeFunAnn lns in (e, r, eff)
 
-analyzeFunAnn :: [String] -> (Maybe String, Maybe String, [CallbackSpec])
+analyzeFunAnn :: [String] -> (Maybe String, Maybe String, Maybe String, [CallbackSpec])
 analyzeFunAnn blocks =
     let ens = fmap (strip . drop 10 . strip) $ listToMaybe $ filter isEnsureComment blocks
         req = fmap (strip . drop 11 . strip) $ listToMaybe $ filter isRequireComment blocks
         cbs = map (analyzeCBS . strip . drop 12 . strip) $ filter isCallbackComment blocks
-    in  (ens, req, cbs)
+        effs = fmap stripEffects $ listToMaybe $ filter isEffectComment blocks
+    in  (ens, req, effs, cbs)
     where
         isEnsureComment  = startswith "/- ensures" . strip
         isRequireComment = startswith "/- requires" . strip
         isCallbackComment = startswith "/- callback" . strip
+        isEffectComment = startswith "/- effects" . strip
+        stripEffects s = let braced = strip (drop 10 (strip s)) in strip $ reverse (drop 1 (reverse (drop 1 braced)))
 
 analyzeCBS :: String -> CallbackSpec
 analyzeCBS s =
@@ -283,7 +286,7 @@ analyzeCBS s =
         Right cbs -> cbs
         Left err -> error $ "Parse CallbackSpec error: " ++ show err ++ " of " ++ s
 
-analyzeOpAnn :: [String] -> Trans (Maybe String, Maybe String, [CallbackSpec])
+analyzeOpAnn :: [String] -> Trans (Maybe String, Maybe String, Maybe String, [CallbackSpec])
 analyzeOpAnn blocks = do
     inspectAttrComment blocks
     return $ analyzeFunAnn blocks

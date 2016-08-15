@@ -68,6 +68,7 @@ data Operation = Operation {
     _imRet  :: Maybe IType,
     _imEnsures :: Maybe String,
     _imRequires :: Maybe String,
+    _imEffects :: Maybe String,
     _imCbs :: [CallbackSpec]
 } deriving (Eq, Show)
 
@@ -82,7 +83,8 @@ data Argument = Argument {
 data InterfaceConstructor = InterfaceConstructor {
     _icArgs :: [Argument],
     _icOptArgs :: [Argument],
-    _icRequires :: Maybe String
+    _icRequires :: Maybe String,
+    _icEffects :: Maybe String
 } deriving (Eq, Show)
 
 -- optional type? ... yes, now it is a bit weird

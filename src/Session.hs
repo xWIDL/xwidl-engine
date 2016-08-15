@@ -31,6 +31,7 @@ import Data.String.Utils
 import Data.Atomics.Counter
 import Data.Aeson
 import Data.Either (partitionEithers)
+import Text.Regex
 
 import qualified Data.ByteString.Lazy as BSL
 import qualified Data.ByteString as BS
@@ -142,6 +143,7 @@ handleNewDef :: Name -> ServeReq ()
 handleNewDef iname = do
     jsRetVal <- getJsValResult (DNew (unName iname) [])
                                (TyInterface iname)
+                               (\_ -> return ())
                                (\_ -> error "Unreachable")
     reply $ Sat (jsRetVal, Nothing)
 
@@ -162,7 +164,8 @@ handleGet lvar name@(Name nameStr) = do
                         x <- compileLVar lvar
                         getJsValResult (DTerm (DAccess x nameStr))
                                        ty
-                                       (inlineAssCtx (DTerm (DAccess x nameStr)))
+                                       (\_ -> return ())
+                                       (inlineAssCtx (\_ -> return ()) (DTerm (DAccess x nameStr)))
     reply $ Sat (jsValRet, Nothing)
 
 handleUnionCall :: LVar -> OperationOrConstructor -> [JsUnionVal] -> ServeReq ()
@@ -216,10 +219,13 @@ handleSingleCall lvar ooc vals tys = do
 
     -- compile value replies
     x <- compileLVar lvar
+
+    let effM = tryEffect ooc args'
+
     case oocRet ooc of
         Nothing -> do -- invocation, no return value
             let Op op = ooc
-            ret <- checkInvocation x (unName $ _imName op) args'
+            ret <- checkInvocation x (unName $ _imName op) args' (effM x "_")
             if ret
                 then reply $ Sat (nullJsRetVal, cbsret)
                 else reply $ Unsat "Invalid invocation"
@@ -231,22 +237,41 @@ handleSingleCall lvar ooc vals tys = do
             logging $ "handleSingleCall: " ++ show e ++ ", retty: " ++ show retty
             jsRetVal <- getJsValResult e
                                        retty
-                                       (inlineAssCtx e)
+                                       (effM x)
+                                       (inlineAssCtx (effM x) e)
             reply $ Sat (jsRetVal, cbsret)
 
-checkInvocation :: String -> String -> [DyExpr] -> ServeReq Bool
-checkInvocation x fname args = do
+tryEffect :: OperationOrConstructor -> [DyExpr] -> String -> String -> ServeReq ()
+tryEffect ooc args xOld xNew = do
+    let x = case ooc of
+                Op _ -> xOld
+                Cons _ _ -> xNew
+    case oocMEffects ooc of
+        Nothing -> return ()
+        Just effStr -> do
+            logging $ "tryEffect of " ++ show effStr
+            let argNames = map _argName (oocArgs ooc ++ oocOptArgs ooc)
+            let effStr' = subRegex (mkRegex "this\\.") effStr (x ++ ".")
+            let effStr'' = foldr (\(name, arg) eStr -> subRegex (mkRegex ("\\$" ++ unName name))
+                                                                eStr
+                                                                ("(" ++ prettyShow arg ++ ")")) -- XXX: not a clean solution though
+                                 effStr' (zip argNames args)
+            addStmt (SStrBlock effStr')
+
+checkInvocation :: String -> String -> [DyExpr] -> ServeReq () -> ServeReq Bool
+checkInvocation x fname args effM = do
     tmArgs <- mapM exprToTerm args
     addStmt (SInvoke x fname tmArgs)
+    effM
     reportToBool <$> getSat
 
 
 -- If nothing, means failed
-getJsValResult :: DyExpr -> IType -> AssContext -> ServeReq JsValResult
-getJsValResult dyexpr ty ctx =
+getJsValResult :: DyExpr -> IType -> (String -> ServeReq ()) -> AssContext -> ServeReq JsValResult
+getJsValResult dyexpr ty effM ctx =
     case ty of
         TyInterface iname -> getObjResult iname
-        TyNullable ty -> getJsValResult dyexpr ty ctx
+        TyNullable ty -> getJsValResult dyexpr ty effM ctx
         TyBuiltIn iname -> getObjResult iname
         TyAny -> getObjResult (Name "Any")
         TyObject -> getObjResult (Name "Object")
@@ -259,6 +284,7 @@ getJsValResult dyexpr ty ctx =
         getObjResult iname = do
             (r, vname) <- allocOnHeap iname
             addStmt (SVarDef vname dyexpr)
+            effM vname
             return $ (JVRRef r)
 
 getPrimResult :: PrimType -> AssContext -> ServeReq JsValResult
@@ -294,7 +320,7 @@ compileCbs lvar ooc noncbargs cbs = do
             then do
                 jsRetVals <- forM (zip withEs (_cArgs cb)) $ \(withE, arg) -> do
                     let ITySingle ty = _argTy arg
-                    getJsValResult (DStrRepr withE) ty $ \(JAssert name je) -> do
+                    getJsValResult (DStrRepr withE) ty (\_ -> return ()) $ \(JAssert name je) -> do
                         je' <- compileExpr je
                         let x = DVal (DVar (unName name))
                         withModifiedMethod
@@ -539,11 +565,12 @@ nullJsRetVal = JVRPrim PTyNull [True]
 getADTConsName :: String -> IType -> String
 getADTConsName tyName ty = tyName ++ "." ++ toUpperFirst (prettyShow ty)
 
-inlineAssCtx :: DyExpr -> AssContext
-inlineAssCtx de jass = do
+inlineAssCtx :: (String -> ServeReq ()) -> DyExpr -> AssContext
+inlineAssCtx effM de jass = do
     x <- fresh
     let je = app jass (Name x)
     asse <- compileExpr je
+    effM x
     tempTLM $ do
         addStmt $ SVarDef x de
         addStmt $ SAssert asse
@@ -585,6 +612,9 @@ oocOptArgs (Cons _ cons) = _icOptArgs cons
 oocRet :: OperationOrConstructor -> Maybe IType
 oocRet (Op op) = _imRet op
 oocRet (Cons iname _) = Just $ TyInterface iname
+
+oocMEffects (Op op) = _imEffects op
+oocMEffects (Cons _ cons) = _icEffects cons
 
 data JsImmVal = ImmVal JsVal
               | ImmApp Name JsVal

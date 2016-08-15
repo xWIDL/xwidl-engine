@@ -59,6 +59,7 @@ data Stmt = SVarDecl String DyType -- var x : <type>;
           | SVarAssign String DyExpr -- x := <expr>;
           | SInvoke String String [DyTerm] -- x.f([<expr>]);
           | SAssert DyExpr -- assert <expr>;
+          | SStrBlock String -- code block in string
           deriving (Show)
 
 data DyType = DTyClass String
@@ -141,6 +142,7 @@ instance Pretty Stmt where
     pretty (SInvoke x f args) = text x <> text "." <> text f <>
                                 parens (hcat (punctuate (comma <> space) (map pretty args)))
     pretty (SAssert e) = text "assert" <+> pretty e
+    pretty (SStrBlock s) = text s
 
 prettyMaybe :: Maybe t -> (t -> Doc) -> Doc
 prettyMaybe Nothing  _ = empty
