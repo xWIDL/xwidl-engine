@@ -129,11 +129,11 @@ transTypeDef (W.Typedef _ ty i) = do
 transExtAttr :: W.ExtendedAttribute Tag -> Trans ()
 transExtAttr = \case
     W.ExtendedAttributeArgList tag (W.Ident "Constructor") args -> do
-        let (_, mReq, mEff) = analyzeConsAnn $ _comment tag
+        let (_, mReq, mEff) = analyzeConsAnn $ _comments tag
         (args', optArgs') <- partitionArgs <$> mapM transArg args -- XXX: opt args
         emitConstructor (InterfaceConstructor args' optArgs' mReq mEff)
     W.ExtendedAttributeNoArgs tag (W.Ident "Constructor") -> do
-        let (_, mReq, mEff) = analyzeConsAnn $ _comment tag
+        let (_, mReq, mEff) = analyzeConsAnn $ _comments tag
         emitConstructor (InterfaceConstructor [] [] mReq mEff)
     W.ExtendedAttributeNoArgs tag (W.Ident "HTMLConstructor") -> emitHTMLConstructor
     _ -> return () -- TODO
@@ -146,14 +146,14 @@ transIfaceMember = \case
 
 transIfaceAttr :: W.Attribute Tag -> Trans ()
 transIfaceAttr (W.Attribute tag _mInheritModifier _mReadOnlyModifer ty x) = do
-    inspectAttrComment $ _comment tag
+    inspectAttrComment $ _comments tag
     ITySingle ty' <- transType ty
     emitAttr ty' (i2n x)
 
 -- If an operation has no identifier, then it must be declared to be a special operation using one of the special keywords.
 transIfaceOp :: W.Operation Tag -> Trans ()
 transIfaceOp (W.Operation tag _extAttrs _mQualifier ret (Just f) args) = do
-    (mEns, mReq, mEff, cbs) <- analyzeOpAnn $ _comment tag
+    (mEns, mReq, mEff, cbs) <- analyzeOpAnn $ _comments tag
     (args', optArgs') <- partitionArgs <$> mapM transArg args
     ret' <- transRet ret
     emitOp $ Operation (i2n f) args' optArgs' ret' mEns mReq mEff cbs
@@ -247,9 +247,10 @@ transArg = \case
         return $ NonOpt (Argument (i2n x) ty' Nothing)
     _ -> error "ArgKey is not supported yet"
 
-inspectAttrComment :: [String] -> Trans ()
+inspectAttrComment :: [Comment] -> Trans ()
 inspectAttrComment = mapM_ collectGhostAttr .
-                     filter isGhostAttrComment
+                     filter isGhostAttrComment .
+                     map cmToSs
     where
         collectGhostAttr s = do
             let attrStr = strip $ drop 8 (strip s)
@@ -260,8 +261,12 @@ inspectAttrComment = mapM_ collectGhostAttr .
                 Left err -> throwError $ "Parse ghost attribute error: " ++ show err
         isGhostAttrComment  = startswith "/- ghost" . strip
 
-analyzeConsAnn :: [String] -> (Maybe String, Maybe String, Maybe String)
-analyzeConsAnn lns = let (e, r, eff, _) = analyzeFunAnn lns in (e, r, eff)
+analyzeConsAnn :: [Comment] -> (Maybe String, Maybe String, Maybe String)
+analyzeConsAnn cms = let (e, r, eff, _) = analyzeFunAnn (map cmToSs cms) in (e, r, eff)
+
+cmToSs :: Comment -> String
+cmToSs (LineComment l) = l
+cmToSs (BlockComment l) = l
 
 analyzeFunAnn :: [String] -> (Maybe String, Maybe String, Maybe String, [CallbackSpec])
 analyzeFunAnn blocks =
@@ -286,10 +291,10 @@ analyzeCBS s =
         Right cbs -> cbs
         Left err -> error $ "Parse CallbackSpec error: " ++ show err ++ " of " ++ s
 
-analyzeOpAnn :: [String] -> Trans (Maybe String, Maybe String, Maybe String, [CallbackSpec])
+analyzeOpAnn :: [Comment] -> Trans (Maybe String, Maybe String, Maybe String, [CallbackSpec])
 analyzeOpAnn blocks = do
     inspectAttrComment blocks
-    return $ analyzeFunAnn blocks
+    return $ analyzeFunAnn (map cmToSs blocks)
 
 emitConst :: W.ConstType -> W.Ident -> W.ConstValue -> Trans ()
 emitConst _ i cv = do
