@@ -1,3 +1,5 @@
+{-# LANGUAGE TypeSynonymInstances, FlexibleInstances, MultiParamTypeClasses #-}
+
 module Session (run) where
 
 import Language.Dafny.Translate
@@ -11,7 +13,9 @@ import Language.WebIDL.Parser
 
 import Language.JS.Type
 import Language.JS.Platform
-import Control.JS.Utils.Server
+-- import Control.JS.Utils.Server
+
+import Network.MessagePack.Server
 
 import qualified Language.WebIDL.AST as W
 
@@ -32,6 +36,7 @@ import Data.Atomics.Counter
 import Data.Aeson
 import Data.Either (partitionEithers)
 import Text.Regex
+import Data.MessagePack
 
 import qualified Data.ByteString.Lazy as BSL
 import qualified Data.ByteString as BS
@@ -42,25 +47,25 @@ import Text.PrettyPrint.Leijen (pretty, Pretty)
 
 type SNum = Int
 
-boot :: [(PrimType, [JAssert])] -> String -> Session Bool
+instance (MessagePack o) => MethodType ServeReq (ServeReq o) where
+  toBody m ls = case ls of
+    [] -> toObject <$> m
+    _  -> throwE $ "argument number error"
+
+boot :: [(PrimType, [JAssert])] -> String -> ServeReq ()
 boot domains idl = do
     modify $ \s -> s { _pDomains = M.fromList domains }
     case parseIDL idl of
-        Left e -> do
-            warning $ "Parse of IDL failed: " ++ show e
-            return False
+        Left e -> throwE $ "Parse of IDL failed: " ++ show e
         Right idlAST -> do
             logging "IDL is parsed."
             case transDefsToSpec idlAST of
-                Left e -> do
-                    warning $ "Translation of IDL failed: " ++ show e
-                    return False
+                Left e -> throwE $ "Translation of IDL failed: " ++ show e
                 Right spec -> do
                     logging $ "Spec is ready: " ++ show spec
                     case translateSpec spec of
-                        Left e -> do
-                            warning $ "Translation of spec failed: " ++ e
-                            return False
+                        Left e ->
+                            throwE $ "Translation of spec failed: " ++ e
                         Right (traits, datatypes) -> do
                             logging "// ------ traits ------- "
                             mapM_ (logging . show . pretty) traits
@@ -70,65 +75,44 @@ boot domains idl = do
                                 _datatypes = datatypes,
                                 _pDomains = M.fromList domains
                             }
-                            return True
+                            return ()
+
+serve_ :: ServeReq ()
+serve_ = serve 8888 [ method "boot" boot
+                    , method "handleSet" handleSet ]
 
 run :: IO ()
 run = do
     logging "Engine launched, waiting for connection"
 
-    -- hSetBuffering stdout NoBuffering
+    hSetBuffering stdout NoBuffering
 
-    -- prelude <- readFile "prelude.dfy"
-    -- logging "Prelude Dafny loaded."
+    prelude <- readFile "prelude.dfy"
+    logging "Prelude Dafny loaded."
 
-    -- evalStateT loop (SessionState {
-    --     _heap = initHeap,
-    --     _tlm  = initTargetMethod,
-    --     _spec = initSpec,
-    --     _traits = M.empty,
-    --     _traitsNew = Nothing,
-    --     _datatypes = M.empty,
-    --     _pDomains = M.empty,
-    --     _prelude = prelude,
-    --     _namer = initNamer
-    -- })
-    -- where
-    --     initTargetMethod = TopLevelMethod {
-    --         _tlName = "Main",
-    --         _tlArgs = M.singleton "cb" (DTyClass "CallbackTrait"),
-    --         _tlRequires = [DTerm (DRel NotEqual (DVal (DVar "cb")) (DVal (DPrim PNull)))],
-    --         _tlBody = []
-    --     }
-
--- loop :: Session ()
--- loop = do
---     logging "loop..."
---     case mCmd of
---         Just cmd -> do
---             logging $ "Request " ++ show cmd
---             eErr <- runExceptT (dispatch cmd)
---             case eErr of
---                 Right continue | continue     -> loop
---                                | not continue -> return ()
---                 Left errMsg -> return (InvalidReqeust errMsg) >> loop
---         Nothing -> do
---             warning $ "Invalid request"
---             return (InvalidReqeust $ show mCmd)
---             loop
-
--- Return True to hint continuation, return False to terminate session
--- dispatch :: Command -> ServeReq Bool
--- dispatch = \case
---     CCall lvar f args -> do
---         op <- lookupOperationWithLvar f lvar
---         handleUnionCall lvar (Op op) args
---         return True
---     CGet lvar name -> handleGet lvar name >> return True
---     CSet lvar name val -> handleSet lvar name val >> return True
---     CNew name Nothing -> handleNewDef name >> return True
---     CNew name (Just args) -> handleNewCons name args >> return True
---     CEnd -> return False
---     _ -> return (InvalidReqeust "Invalid cmd") >> return True
+    evalStateT m (SessionState {
+        _heap = initHeap,
+        _tlm  = initTargetMethod,
+        _spec = initSpec,
+        _traits = M.empty,
+        _traitsNew = Nothing,
+        _datatypes = M.empty,
+        _pDomains = M.empty,
+        _prelude = prelude,
+        _namer = initNamer
+    })
+    where
+        initTargetMethod = TopLevelMethod {
+            _tlName = "Main",
+            _tlArgs = M.singleton "cb" (DTyClass "CallbackTrait"),
+            _tlRequires = [DTerm (DRel NotEqual (DVal (DVar "cb")) (DVal (DPrim PNull)))],
+            _tlBody = []
+        }
+        m = do
+            r <- runExceptT serve_
+            case r of
+                Left e -> warning e
+                Right () -> return ()
 
 handleSet :: LVar -> Name -> JsVal -> ServeReq Reply
 handleSet lvar name val = do
