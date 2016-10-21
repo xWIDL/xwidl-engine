@@ -15,6 +15,9 @@ data Spec = Spec {
     _cbs        :: M.Map Name Callback
 } deriving (Eq, Show)
 
+initSpec :: Spec
+initSpec = Spec M.empty M.empty M.empty M.empty
+
 data Definition = DefInterface Interface
                 | DefDictionary Dictionary
                 | DefException Exception

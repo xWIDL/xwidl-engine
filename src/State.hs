@@ -26,10 +26,6 @@ data SessionState = SessionState {
     _tlm :: TopLevelMethod,
     -- Original spec
     _spec :: Spec,
-    -- Socket handle
-    _handler :: Handle,
-    -- Session number
-    _snum :: Int,
     -- Traits text
     _traits :: M.Map String Trait,
     -- New traits, which will be used as part of code emission if avaiable

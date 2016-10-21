@@ -40,92 +40,97 @@ import qualified Data.ByteString.Char8 as BC
 import System.IO
 import Text.PrettyPrint.Leijen (pretty, Pretty)
 
+type SNum = Int
+
+boot :: [(PrimType, [JAssert])] -> String -> Session Bool
+boot domains idl = do
+    modify $ \s -> s { _pDomains = M.fromList domains }
+    case parseIDL idl of
+        Left e -> do
+            warning $ "Parse of IDL failed: " ++ show e
+            return False
+        Right idlAST -> do
+            logging "IDL is parsed."
+            case transDefsToSpec idlAST of
+                Left e -> do
+                    warning $ "Translation of IDL failed: " ++ show e
+                    return False
+                Right spec -> do
+                    logging $ "Spec is ready: " ++ show spec
+                    case translateSpec spec of
+                        Left e -> do
+                            warning $ "Translation of spec failed: " ++ e
+                            return False
+                        Right (traits, datatypes) -> do
+                            logging "// ------ traits ------- "
+                            mapM_ (logging . show . pretty) traits
+                            modify $ \s -> s {
+                                _spec = spec,
+                                _traits = traits,
+                                _datatypes = datatypes,
+                                _pDomains = M.fromList domains
+                            }
+                            return True
+
 run :: IO ()
 run = do
-    counter <- newCounter 0
     logging "Engine launched, waiting for connection"
-    startServe $ \handler -> do
-        hSetBuffering stdout NoBuffering
-        hSetBuffering handler NoBuffering
 
-        snum <- incrCounter 1 counter
-        logging $ "Creating session #" ++ show snum
-        
-        Just (CBoot (Domains m) idl) <- eGetLine handler
-        logging $ "Get domains: " ++ show m
+    -- hSetBuffering stdout NoBuffering
 
-        prelude <- readFile "prelude.dfy"
-        logging "Prelude Dafny loaded."
+    -- prelude <- readFile "prelude.dfy"
+    -- logging "Prelude Dafny loaded."
 
-        case parseIDL idl of
-            Left e -> warning $ "Parse of IDL failde: " ++ show e
-            Right idlAST -> do
-                logging "IDL is parsed."
-                case transDefsToSpec idlAST of
-                    Left e -> warning $ "Translation of IDL failde: " ++ show e
-                    Right spec -> do
-                        logging $ "Spec is ready: " ++ show spec
-                        case translateSpec spec of
-                            Left e -> warning $ "Translation of spec failed: " ++ e
-                            Right (traits, datatypes) -> do
-                                putStrLn "// ------ traits ------- "
-                                mapM_ (print . pretty) traits
+    -- evalStateT loop (SessionState {
+    --     _heap = initHeap,
+    --     _tlm  = initTargetMethod,
+    --     _spec = initSpec,
+    --     _traits = M.empty,
+    --     _traitsNew = Nothing,
+    --     _datatypes = M.empty,
+    --     _pDomains = M.empty,
+    --     _prelude = prelude,
+    --     _namer = initNamer
+    -- })
+    -- where
+    --     initTargetMethod = TopLevelMethod {
+    --         _tlName = "Main",
+    --         _tlArgs = M.singleton "cb" (DTyClass "CallbackTrait"),
+    --         _tlRequires = [DTerm (DRel NotEqual (DVal (DVar "cb")) (DVal (DPrim PNull)))],
+    --         _tlBody = []
+    --     }
 
-                                evalStateT loop (SessionState {
-                                    _heap = initHeap,
-                                    _tlm  = initTargetMethod,
-                                    _spec = spec,
-                                    _handler = handler,
-                                    _snum = snum,
-                                    _traits = traits,
-                                    _traitsNew = Nothing,
-                                    _datatypes = datatypes,
-                                    _pDomains = M.fromList m,
-                                    _prelude = prelude,
-                                    _namer = initNamer
-                                })
-                                logging $ "Ending session #" ++ show snum
-    where
-        initTargetMethod = TopLevelMethod {
-            _tlName = "Main",
-            _tlArgs = M.singleton "cb" (DTyClass "CallbackTrait"),
-            _tlRequires = [DTerm (DRel NotEqual (DVal (DVar "cb")) (DVal (DPrim PNull)))],
-            _tlBody = []
-        }
-
-loop :: Session ()
-loop = do
-    logging "loop..."
-    handler <- _handler <$> get
-    mCmd <- liftIO $ eGetLine handler
-    case mCmd of
-        Just cmd -> do
-            logging $ "Request " ++ show cmd
-            eErr <- runExceptT (dispatch cmd)
-            case eErr of
-                Right continue | continue     -> loop
-                               | not continue -> return ()
-                Left errMsg -> reply (InvalidReqeust errMsg) >> loop
-        Nothing -> do
-            warning $ "Invalid request"
-            reply (InvalidReqeust $ show mCmd)
-            loop
+-- loop :: Session ()
+-- loop = do
+--     logging "loop..."
+--     case mCmd of
+--         Just cmd -> do
+--             logging $ "Request " ++ show cmd
+--             eErr <- runExceptT (dispatch cmd)
+--             case eErr of
+--                 Right continue | continue     -> loop
+--                                | not continue -> return ()
+--                 Left errMsg -> return (InvalidReqeust errMsg) >> loop
+--         Nothing -> do
+--             warning $ "Invalid request"
+--             return (InvalidReqeust $ show mCmd)
+--             loop
 
 -- Return True to hint continuation, return False to terminate session
-dispatch :: Command -> ServeReq Bool
-dispatch = \case
-    CCall lvar f args -> do
-        op <- lookupOperationWithLvar f lvar
-        handleUnionCall lvar (Op op) args
-        return True
-    CGet lvar name -> handleGet lvar name >> return True
-    CSet lvar name val -> handleSet lvar name val >> return True
-    CNew name Nothing -> handleNewDef name >> return True
-    CNew name (Just args) -> handleNewCons name args >> return True
-    CEnd -> return False
-    _ -> reply (InvalidReqeust "Invalid cmd") >> return True
+-- dispatch :: Command -> ServeReq Bool
+-- dispatch = \case
+--     CCall lvar f args -> do
+--         op <- lookupOperationWithLvar f lvar
+--         handleUnionCall lvar (Op op) args
+--         return True
+--     CGet lvar name -> handleGet lvar name >> return True
+--     CSet lvar name val -> handleSet lvar name val >> return True
+--     CNew name Nothing -> handleNewDef name >> return True
+--     CNew name (Just args) -> handleNewCons name args >> return True
+--     CEnd -> return False
+--     _ -> return (InvalidReqeust "Invalid cmd") >> return True
 
-handleSet :: LVar -> Name -> JsVal -> ServeReq ()
+handleSet :: LVar -> Name -> JsVal -> ServeReq Reply
 handleSet lvar name val = do
     x <- compileLVar lvar
     let aNameStr = unName name
@@ -136,24 +141,24 @@ handleSet lvar name val = do
                     addStmt $ SVarAssign (x ++ "." ++ aNameStr) (DCall ix fname [])
                     getSat
     if reportToBool eReport
-        then reply $ Sat (nullJsRetVal, Nothing)
-        else reply $ Unsat "Can't set"
+        then return $ Sat (nullJsRetVal, Nothing)
+        else return $ Unsat "Can't set"
 
-handleNewDef :: Name -> ServeReq ()
+handleNewDef :: Name -> ServeReq Reply
 handleNewDef iname = do
     jsRetVal <- getJsValResult (DNew (unName iname) [])
                                (TyInterface iname)
                                (\_ -> return ())
                                (\_ -> error "Unreachable")
-    reply $ Sat (jsRetVal, Nothing)
+    return $ Sat (jsRetVal, Nothing)
 
-handleNewCons :: Name -> [JsUnionVal] -> ServeReq ()
+handleNewCons :: Name -> [JsUnionVal] -> ServeReq Reply
 handleNewCons iname uvals = do
     types <- mapM inferJsUnionValType uvals
     cons <- lookupCons iname types
     handleUnionCall (LInterface iname) (Cons iname cons) uvals
 
-handleGet :: LVar -> Name -> ServeReq ()
+handleGet :: LVar -> Name -> ServeReq Reply
 handleGet lvar name@(Name nameStr) = do
     iname <- lvarToIfaceName lvar
     mConst <- lookupConsts iname name
@@ -166,14 +171,14 @@ handleGet lvar name@(Name nameStr) = do
                                        ty
                                        (\_ -> return ())
                                        (inlineAssCtx (\_ -> return ()) (DTerm (DAccess x nameStr)))
-    reply $ Sat (jsValRet, Nothing)
+    return $ Sat (jsValRet, Nothing)
 
-handleUnionCall :: LVar -> OperationOrConstructor -> [JsUnionVal] -> ServeReq ()
+handleUnionCall :: LVar -> OperationOrConstructor -> [JsUnionVal] -> ServeReq Reply
 handleUnionCall lvar ooc uvals = do
     -- regenerate mono-calls
     let args = oocArgs ooc ++ oocOptArgs ooc
     if length uvals /= length args
-        then reply $ InvalidReqeust "Wrong number of arguments"
+        then return $ InvalidReqeust "Wrong number of arguments"
         else do
             let pairs = zip uvals (map _argTy args)
             logging $ "handleUnionCall-pairs: " ++ show pairs
@@ -183,11 +188,13 @@ handleUnionCall lvar ooc uvals = do
 
             logging $ "handleUnionCall-calls: " ++ show calls
 
-            forM_ calls $ \(vals, argtys) -> do
-                -- compile non-optional arguments
-                handleSingleCall lvar ooc vals argtys
+            -- forM_ calls $ \(vals, argtys) -> do
+            --     -- compile non-optional arguments
+            --     handleSingleCall lvar ooc vals argtys
 
-handleSingleCall :: LVar -> OperationOrConstructor -> [JsImmVal] -> [IType] -> ServeReq ()
+            error "Can't synthesize union call yet"
+
+handleSingleCall :: LVar -> OperationOrConstructor -> [JsImmVal] -> [IType] -> ServeReq Reply
 handleSingleCall lvar ooc vals tys = do
     let nargs = length (oocArgs ooc) + length (oocOptArgs ooc)
     let nopts = length (oocOptArgs ooc)
@@ -227,8 +234,8 @@ handleSingleCall lvar ooc vals tys = do
             let Op op = ooc
             ret <- checkInvocation x (unName $ _imName op) args' (effM x "_")
             if ret
-                then reply $ Sat (nullJsRetVal, cbsret)
-                else reply $ Unsat "Invalid invocation"
+                then return $ Sat (nullJsRetVal, cbsret)
+                else return $ Unsat "Invalid invocation"
         Just retty -> do -- evaluation, with return value
             tmArgs <- mapM exprToTerm args'
             let e = case ooc of
@@ -239,7 +246,7 @@ handleSingleCall lvar ooc vals tys = do
                                        retty
                                        (effM x)
                                        (inlineAssCtx (effM x) e)
-            reply $ Sat (jsRetVal, cbsret)
+            return $ Sat (jsRetVal, cbsret)
 
 tryEffect :: OperationOrConstructor -> [DyExpr] -> String -> String -> ServeReq ()
 tryEffect ooc args xOld xNew = do
@@ -480,8 +487,8 @@ domainsToAssertions domAsses =
         conj' (e:[]) = e
         conj' (e:es) = JEBinary Or e (conj' es)
 
--- reply :: Reply -> Session ()
-reply r = (_handler <$> get) >>= \hd -> liftIO (ePutLine hd r)
+-- return :: Reply -> Session ()
+-- return r = (_handler <$> get) >>= \hd -> liftIO (ePutLine hd r)
 
 addValueMethod :: String -> JsVal -> ServeReq String
 addValueMethod iname val = do
