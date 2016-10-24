@@ -13,7 +13,6 @@ import Language.WebIDL.Parser
 
 import Language.JS.Type
 import Language.JS.Platform
--- import Control.JS.Utils.Server
 
 import Network.MessagePack.Server
 
@@ -23,6 +22,7 @@ import Model
 import State
 import Util
 import Type
+import Server
 
 import Control.Monad.State hiding (join)
 import Control.Monad (forM_)
@@ -79,7 +79,9 @@ boot domains idl = do
 
 serve_ :: ServeReq ()
 serve_ = serve 8888 [ method "boot" boot
-                    , method "handleSet" handleSet ]
+                    , method "set" handleSet
+                    , method "construct" handleNewCons
+                    , method "call" handleUnionCall']
 
 run :: IO ()
 run = do
@@ -90,7 +92,9 @@ run = do
     prelude <- readFile "prelude.dfy"
     logging "Prelude Dafny loaded."
 
-    evalStateT m (SessionState {
+    idl <- readFile "prelude.idl"
+
+    evalStateT (m idl) (SessionState {
         _heap = initHeap,
         _tlm  = initTargetMethod,
         _spec = initSpec,
@@ -108,8 +112,12 @@ run = do
             _tlRequires = [DTerm (DRel NotEqual (DVal (DVar "cb")) (DVal (DPrim PNull)))],
             _tlBody = []
         }
-        m = do
-            r <- runExceptT serve_
+        m idl = do
+            r <- runExceptT $ do
+                -- FIXME: boot from client
+                let Domains m = domains
+                boot m idl
+                serve_
             case r of
                 Left e -> warning e
                 Right () -> return ()
@@ -156,6 +164,11 @@ handleGet lvar name@(Name nameStr) = do
                                        (\_ -> return ())
                                        (inlineAssCtx (\_ -> return ()) (DTerm (DAccess x nameStr)))
     return $ Sat (jsValRet, Nothing)
+
+handleUnionCall' :: LVar -> Name -> [JsUnionVal] -> ServeReq Reply
+handleUnionCall' lvar f args = do
+    op <- lookupOperationWithLvar f lvar
+    handleUnionCall lvar (Op op) args
 
 handleUnionCall :: LVar -> OperationOrConstructor -> [JsUnionVal] -> ServeReq Reply
 handleUnionCall lvar ooc uvals = do
@@ -429,7 +442,7 @@ modifyEnsures :: (Maybe String -> Maybe String) -> TraitMemberMethod -> TraitMem
 modifyEnsures f m = m { _tmEnsures = f (_tmEnsures m) }
 
 queryCallbackSpec :: OperationOrConstructor -> Name -> CallbackSpec
-queryCallbackSpec ooc x = 
+queryCallbackSpec ooc x =
     case ooc of
         Op op -> head $ filter (\(CallbackSpec x' _ _) -> x' == x) (_imCbs op)
         Cons _ _ -> error "can't query constructor for callback"
@@ -631,4 +644,3 @@ exprToTerm other = do
     x <- fresh
     addStmt (SVarDef x other)
     return (DVal (DVar x))
-

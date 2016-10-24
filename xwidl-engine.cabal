@@ -1,5 +1,5 @@
 name:                xwidl-engine
-version:             0.1.0.0
+version:             0.1.1.0
 -- synopsis:            
 -- description:         
 license:             MIT
@@ -16,6 +16,7 @@ library
                        State
                        Util
                        Type
+                       Server
                        Language.Dafny.AST
                        Language.Dafny.Translate
                        Language.XWIDL.Spec
