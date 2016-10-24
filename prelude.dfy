@@ -1,13 +1,13 @@
 datatype Option<T> = None | Some(fromSome: T)
 
-trait Any {
+class Any {
 
 }
 
-trait Object {
+class Object {
 
 }
 
-trait CallbackTrait {
+class CallbackClass {
 
 }

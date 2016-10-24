@@ -6,9 +6,13 @@ import Language.JS.Type
 import Language.JS.Platform (RelBiOp(..))
 
 import qualified Data.Map as M
+import qualified Data.Set as S
+
+type Deps = S.Set String
 
 data Class = Class {
     _tname :: String,
+    _tdeps :: Deps,
     _tattrs :: M.Map String ClassMemberAttr,
     _tconstrs :: [ClassConstructor],
     _tmethods :: M.Map String ClassMemberMethod
@@ -74,10 +78,11 @@ data DyType = DTyClass String
 -- Pretty print
 
 instance Pretty Class where
-    pretty (Class t ma mc mm) = text "class" <+> text t <+>
-                             braces (line <> vsep (map (indent 4 . prettyAttr) (M.elems ma) ++
-                                                   map (indent 4 . pretty) mc ++
-                                                   map (indent 4 . pretty) (M.elems mm)) <> line)
+    pretty (Class t _ ma mc mm) =
+        text "class" <+> text t <+>
+            braces (line <> vsep (map (indent 4 . prettyAttr) (M.elems ma) ++
+                                      map (indent 4 . pretty) mc ++
+                                      map (indent 4 . pretty) (M.elems mm)) <> line)
 
 instance Pretty TopLevelMethod where
     pretty (TopLevelMethod x args requires body) =

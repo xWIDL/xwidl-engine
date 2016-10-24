@@ -198,7 +198,9 @@ transNonAnyType = \case
         case M.lookup name tymap of
             Just (ITySingle ty) -> return ty
             Just _ -> error "tyindent union"
-            Nothing -> return $ applyTySuffix suffix (TyInterface name)
+            Nothing -> case unName name of
+                            "USVString" -> return $ TyDOMString
+                            _ -> return $ applyTySuffix suffix (TyInterface name)
     W.TySequence ty mNull -> do
         ITySingle ty' <- transType ty
         case mNull of

@@ -27,9 +27,9 @@ data SessionState = SessionState {
     -- Original spec
     _spec :: Spec,
     -- Classs text
-    _traits :: M.Map String Class,
-    -- New traits, which will be used as part of code emission if avaiable
-    _traitsNew :: Maybe (M.Map String Class),
+    _classes :: M.Map String Class,
+    -- New classes, which will be used as part of code emission if avaiable
+    _classesNew :: Maybe (M.Map String Class),
     _datatypes :: M.Map String [(String, DyType)],
     -- Primitive type domains
     _pDomains :: M.Map PrimType [JAssert],
@@ -135,10 +135,10 @@ lookupCbMaybe (TyInterface n) = do
 lookupCbMaybe _ = return Nothing
 
 lookupClasss = do
-    tn <- _traitsNew <$> get
+    tn <- _classesNew <$> get
     case tn of
         Just tn -> return tn
-        Nothing -> _traits <$> get
+        Nothing -> _classes <$> get
 
 lookupDefinition :: Name -> ServeReq (Maybe Definition)
 lookupDefinition name = do
@@ -160,9 +160,9 @@ updateMethod tname fname f = do
 
 updateClass :: String -> (Class -> Class) -> ServeReq ()
 updateClass x f = do
-    traits <- lookupClasss
-    case M.lookup x traits of
-        Just t -> modify (\s -> s { _traitsNew = Just (M.insert x (f t) traits)})
+    classes <- lookupClasss
+    case M.lookup x classes of
+        Just t -> modify (\s -> s { _classesNew = Just (M.insert x (f t) classes)})
         Nothing -> return ()
 
 -- Add

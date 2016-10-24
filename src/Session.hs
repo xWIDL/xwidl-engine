@@ -66,12 +66,12 @@ boot domains idl = do
                     case translateSpec spec of
                         Left e ->
                             throwE $ "Translation of spec failed: " ++ e
-                        Right (traits, datatypes) -> do
-                            logging "// ------ traits ------- "
-                            mapM_ (logging . show . pretty) traits
+                        Right (classes, datatypes) -> do
+                            logging "// ------ classes ------- "
+                            mapM_ (logging . show . pretty) classes
                             modify $ \s -> s {
                                 _spec = spec,
-                                _traits = traits,
+                                _classes = classes,
                                 _datatypes = datatypes,
                                 _pDomains = M.fromList domains
                             }
@@ -98,8 +98,8 @@ run = do
         _heap = initHeap,
         _tlm  = initTargetMethod,
         _spec = initSpec,
-        _traits = M.empty,
-        _traitsNew = Nothing,
+        _classes = M.empty,
+        _classesNew = Nothing,
         _datatypes = M.empty,
         _pDomains = M.empty,
         _prelude = prelude,
@@ -458,11 +458,11 @@ getSat :: ServeReq Report
 getSat = do
     datatypes <- _datatypes <$> get
     tlm <- _tlm <$> get
-    traits <- lookupClasss
-    modify (\s -> s { _names = M.empty, _traitsNew = Nothing })
+    classes <- lookupClasss
+    modify (\s -> s { _names = M.empty, _classesNew = Nothing })
     prelude <- _prelude <$> get
     let src = prelude ++ "\n" ++ pprintDatatypes datatypes ++ "\n" ++
-              unlines (map prettyShow $ M.elems traits) ++ "\n" ++ show (pretty tlm)
+              unlines (map prettyShow . topSortClasses $ M.elems classes) ++ "\n" ++ show (pretty tlm)
     logging ("Getting sat from REST...tlm: \n" ++ src)
     ans <- liftIO $ askDafny (Local "/home/zz/xwidl/dafny/Binaries") src
     case ans of
@@ -538,22 +538,22 @@ withCopiedMethod tname baseFname f m = do
             Nothing  -> t) (m newFname)
 
 modifyClass x f m = do
-    traits <- lookupClasss
-    case M.lookup x traits of
+    classes <- lookupClasss
+    case M.lookup x classes of
         Just t -> do
-            modify (\s -> s { _traits = M.insert x (f t) traits })
+            modify (\s -> s { _classes = M.insert x (f t) classes })
             m
         Nothing -> throwE "Invalid interface name"
 
 -- NOTE: Side-effect free
 withModifiedClass :: String -> (Class -> Class) -> ServeReq a -> ServeReq a
 withModifiedClass x f m = do
-    traits <- lookupClasss
-    case M.lookup x traits of
+    classes <- lookupClasss
+    case M.lookup x classes of
         Just t -> do
-            modify (\s -> s { _traits = M.insert x (f t) traits })
+            modify (\s -> s { _classes = M.insert x (f t) classes })
             a <- m
-            modify (\s -> s { _traits = M.insert x t traits })
+            modify (\s -> s { _classes = M.insert x t classes })
             return a
         Nothing -> throwE "Invalid interface name"
 

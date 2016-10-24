@@ -2,7 +2,8 @@
 {-# LANGUAGE TupleSections #-}
 
 module Language.Dafny.Translate (
-    translateSpec, getUnionIfaceName, iTypeToDyType
+    translateSpec, getUnionIfaceName, iTypeToDyType,
+    topSortClasses
 ) where
 
 import Language.XWIDL.Spec
@@ -10,7 +11,11 @@ import Language.Dafny.AST
 import Language.JS.Type
 import Data.String.Utils
 
+import Data.Graph
+import Control.Arrow
+
 import qualified Data.Map as M
+import qualified Data.Set as S
 
 import Util
 
@@ -34,16 +39,25 @@ translateSpec s@(Spec ifaces dicts _ _) =
          (runExcept (runStateT m (TransState { _spec = s, _datatypes = M.empty })))
     where
         m = do
-                ifaceClasses <- M.fromList <$> mapM translateIface (M.elems ifaces)
-                dictClasses <- M.fromList <$> mapM translateDict (M.elems dicts)
-                return (ifaceClasses `M.union` dictClasses)
+                ifaceClasses <- map (\c -> (_tname c, c)) <$> mapM translateIface (M.elems ifaces)
+                dictClasses <- map (\c -> (_tname c, c)) <$> mapM translateDict (M.elems dicts)
+                return $ M.fromList $ ifaceClasses ++ dictClasses
 
-translateIface :: Interface -> Trans (String, Class)
+topSortClasses :: [Class] -> [Class]
+topSortClasses classes =
+    let edges = map (\c -> (c, _tname c, S.toList $ _tdeps c)) classes
+        (g, fv, fk) = graphFromEdges edges
+        nodes = map fv (topSort g)
+    in  map (\(c, _, _) -> c) nodes
+
+translateIface :: Interface -> Trans Class
 translateIface (Interface iname mInherit constructors _consts attrs gAttrs operations) = do
-    constrs <- case constructors of
-                InterfaceConstructors conss -> mapM translateConstructor conss
-                InterfaceHTMLConstructor -> return [defConstructor]
-    tms <- mapM translateMethod (M.elems operations)
+    (constrs, deps1) <- case constructors of
+                           InterfaceConstructors conss ->
+                               second S.unions . unzip <$> mapM translateConstructor conss
+                           InterfaceHTMLConstructor -> return ([defConstructor], S.empty)
+    (tms, deps2) <- second S.unions . unzip <$> mapM translateMethod (M.elems operations)
+    let deps = deps1 `S.union` deps2
     let tmsMap = M.fromList $ map (\t -> (_tmName t, t)) tms
     let setters = M.fromList $ map (\(x, ty) -> let fname = "set_" ++ unName x
                                                 in  (fname, defSetter fname))
@@ -57,11 +71,12 @@ translateIface (Interface iname mInherit constructors _consts attrs gAttrs opera
             ifaces <- _ifaces . _spec <$> get
             case M.lookup parent ifaces of
                 Just piface -> do -- TODO: optimization
-                    Class _ pattrs pcons pmethods <- snd <$> translateIface piface
-                    return (tname, Class tname (pattrs `M.union` allAttrs) (pcons ++ constrs) (pmethods `M.union` methods))
+                    Class _ deps' pattrs pcons pmethods <- translateIface piface
+                    return $ Class tname (deps `S.union` deps') (pattrs `M.union` allAttrs)
+                                   (pcons ++ constrs) (pmethods `M.union` methods)
                 Nothing -> throwError $ "Invalid inheritance: " ++ show parent
         Nothing ->
-            return (tname, Class tname allAttrs constrs methods)
+            return $ Class tname deps allAttrs constrs methods
     where
         defConstructor = ClassConstructor {
             _tcArgs = [],
@@ -76,12 +91,12 @@ translateIface (Interface iname mInherit constructors _consts attrs gAttrs opera
             _tmRequires = Nothing
         }
 
-translateDict :: Dictionary -> Trans (String, Class)
+translateDict :: Dictionary -> Trans Class
 translateDict (Dictionary dname mInherit dmembers) = do
     let attrs = M.fromList $ map (\(DictionaryMember ty x _) ->
                                         (unName x, (unName x, iTypeToDyType ty)))
                                  dmembers
-
+    let deps = filterDeps $ map (\(DictionaryMember ty _ _) -> iTypeToDyType ty) dmembers
     let tname = unName dname
     -- let bindAttrsStr = join " && " (map (\k -> "ret." ++ k ++ " == " ++ k) (M.keys attrs))
     -- XXX: fix dictionary binding
@@ -95,38 +110,42 @@ translateDict (Dictionary dname mInherit dmembers) = do
             dicts <- _dicts . _spec <$> get
             case M.lookup parent dicts of
                 Just pdict -> do -- TODO: optimization
-                    Class _ pattrs pcons pmethods <- snd <$> translateDict pdict
-                    return (tname, Class tname (pattrs `M.union` attrs) (cons:pcons) pmethods)
+                    Class _ deps' pattrs pcons pmethods <- translateDict pdict
+                    return $ Class tname (deps `S.union` deps') (pattrs `M.union` attrs) (cons:pcons) pmethods
                 Nothing -> throwError $ "Invalid inheritance: " ++ show parent
         Nothing ->
-            return (tname, Class tname attrs [cons] M.empty)
+            return $ Class tname deps attrs [cons] M.empty
 
-translateConstructor :: InterfaceConstructor -> Trans ClassConstructor
+translateConstructor :: InterfaceConstructor -> Trans (ClassConstructor, Deps)
 translateConstructor InterfaceConstructor{..} = do
     args <- mapM (\(Argument x ity _) -> (unName x,) <$> iType_ToDyType ity) _icArgs
     optargs <- mapM (\(Argument x ity _) -> (unName x,) . DTyOpt <$> iType_ToDyType ity) _icOptArgs
-    return ClassConstructor {
-            _tcArgs = args ++ optargs,
+    let argsAll = args ++ optargs
+    let deps = filterDeps $ map snd argsAll
+    return (ClassConstructor {
+            _tcArgs = argsAll,
             _tcRequires = _icRequires
-    }
+    }, deps)
 
-translateMethod :: Operation -> Trans ClassMemberMethod
+translateMethod :: Operation -> Trans (ClassMemberMethod, Deps)
 translateMethod Operation{..} = do
     cbs <- _cbs . _spec <$> get
     
     args <- mapM (\(Argument x ity _) -> (unName x,) <$> iType_ToDyType ity) $ map (replaceCb cbs) _imArgs
     optargs <- mapM (\(Argument x ity _) -> (unName x,) . DTyOpt <$> iType_ToDyType ity) $ map (replaceCb cbs) _imOptArgs
 
-    let args' = args ++ optargs
+    let argsAll = args ++ optargs
     let retty = fmap (\ty -> ("ret", iTypeToDyType ty)) _imRet
+
+    let deps = filterDeps $ map snd argsAll
     
-    return ClassMemberMethod {
+    return (ClassMemberMethod {
         _tmName = unName _imName,
-        _tmArgs = args',
+        _tmArgs = argsAll,
         _tmRet  = retty,
         _tmEnsures = _imEnsures,
         _tmRequires = _imRequires
-    }
+    }, deps)
 
 replaceCb :: M.Map Name Callback -> Argument -> Argument
 replaceCb cbs arg = do
@@ -171,3 +190,12 @@ getUnionIfaceName itys = join "Or" (map prettyShow itys)
 
 lookupDatatype :: String -> Trans (Maybe [(String, DyType)])
 lookupDatatype x = M.lookup x <$> _datatypes <$> get
+
+filterDeps :: [DyType] -> Deps
+filterDeps = S.fromList .
+             map (\(DTyClass s) -> s) .
+             filter (\case
+                        DTyClass _ -> True
+                        _ -> False)
+
+

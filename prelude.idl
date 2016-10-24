@@ -2,7 +2,7 @@ dictionary BlobPropertyBag {
   DOMString type_ = "";
 };
 
-[Constructor(optional sequence<BlobPart> blobParts, optional BlobPropertyBag options),
+[Constructor(optional sequence<USVString> blobParts, optional BlobPropertyBag options),
 Exposed=(Window,Worker)]
 interface Blob {
 
@@ -19,4 +19,4 @@ interface Blob {
 
 };
 
-typedef (BufferSource or Blob or USVString) BlobPart;
+// typedef (BufferSource or Blob or USVString) BlobPart;
