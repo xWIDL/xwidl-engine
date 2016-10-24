@@ -144,11 +144,16 @@ handleNewDef iname = do
                                (\_ -> error "Unreachable")
     return $ Sat (jsRetVal, Nothing)
 
-handleNewCons :: Name -> [JsUnionVal] -> ServeReq Reply
-handleNewCons iname uvals = do
+handleNewCons :: Name -> [JsUnionVal] -> Hash -> ServeReq JRef
+handleNewCons iname uvals hash = do
+    logging $ "handleNewCons: " ++ show iname ++ "(" ++ show uvals ++ ")@" ++ show hash
+
     types <- mapM inferJsUnionValType uvals
     cons <- lookupCons iname types
-    handleUnionCall (LInterface iname) (Cons iname cons) uvals
+    reply <- handleUnionCall (LInterface iname) (Cons iname cons) uvals
+    case reply of
+        Sat (JVRRef jref, _) -> return jref
+        _ -> error $ "Unhandled case in construct: " ++ show reply
 
 handleGet :: LVar -> Name -> ServeReq Reply
 handleGet lvar name@(Name nameStr) = do
@@ -174,7 +179,7 @@ handleUnionCall :: LVar -> OperationOrConstructor -> [JsUnionVal] -> ServeReq Re
 handleUnionCall lvar ooc uvals = do
     -- regenerate mono-calls
     let args = oocArgs ooc ++ oocOptArgs ooc
-    if length uvals /= length args
+    if length uvals < length (oocArgs ooc) || length uvals > length args
         then return $ InvalidReqeust "Wrong number of arguments"
         else do
             let pairs = zip uvals (map _argTy args)
@@ -188,8 +193,10 @@ handleUnionCall lvar ooc uvals = do
             -- forM_ calls $ \(vals, argtys) -> do
             --     -- compile non-optional arguments
             --     handleSingleCall lvar ooc vals argtys
-
-            error "Can't synthesize union call yet"
+            case calls of
+                [(vals, argtys)] ->
+                    handleSingleCall lvar ooc vals argtys
+                _ -> error "Can't synthesize union call yet"
 
 handleSingleCall :: LVar -> OperationOrConstructor -> [JsImmVal] -> [IType] -> ServeReq Reply
 handleSingleCall lvar ooc vals tys = do
