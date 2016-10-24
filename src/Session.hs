@@ -252,7 +252,9 @@ handleSingleCall lvar ooc vals tys = do
                                        retty
                                        (effM x)
                                        (inlineAssCtx (effM x) e)
-            return $ Sat (jsRetVal, cbsret)
+            b <- reportToBool <$> getSat
+            if b then return $ Sat (jsRetVal, cbsret)
+                 else return $ Unsat "Invalid call"
 
 tryEffect :: OperationOrConstructor -> [DyExpr] -> String -> String -> ServeReq ()
 tryEffect ooc args xOld xNew = do
