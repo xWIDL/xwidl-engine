@@ -7,21 +7,21 @@ import Language.JS.Platform (RelBiOp(..))
 
 import qualified Data.Map as M
 
-data Trait = Trait {
+data Class = Class {
     _tname :: String,
-    _tattrs :: M.Map String TraitMemberAttr,
-    _tconstrs :: [TraitConstructor],
-    _tmethods :: M.Map String TraitMemberMethod
+    _tattrs :: M.Map String ClassMemberAttr,
+    _tconstrs :: [ClassConstructor],
+    _tmethods :: M.Map String ClassMemberMethod
 } deriving (Show)
 
-type TraitMemberAttr = (String, DyType)
+type ClassMemberAttr = (String, DyType)
 
-data TraitConstructor = TraitConstructor {
+data ClassConstructor = ClassConstructor {
     _tcArgs :: [(String, DyType)],
     _tcRequires :: Maybe String
 } deriving Show
 
-data TraitMemberMethod = TraitMemberMethod {
+data ClassMemberMethod = ClassMemberMethod {
     _tmName :: String,
     _tmArgs :: [(String, DyType)],
     _tmRet  :: Maybe (String, DyType),
@@ -73,8 +73,8 @@ data DyType = DTyClass String
 
 -- Pretty print
 
-instance Pretty Trait where
-    pretty (Trait t ma mc mm) = text "class" <+> text t <+>
+instance Pretty Class where
+    pretty (Class t ma mc mm) = text "class" <+> text t <+>
                              braces (line <> vsep (map (indent 4 . prettyAttr) (M.elems ma) ++
                                                    map (indent 4 . pretty) mc ++
                                                    map (indent 4 . pretty) (M.elems mm)) <> line)
@@ -88,14 +88,14 @@ instance Pretty TopLevelMethod where
             else empty) <+>
         braces (line <> vsep (map (\s -> indent 4 (pretty s) <> semi) body) <> line)
 
-instance Pretty TraitConstructor where
-    pretty (TraitConstructor args requires) =
+instance Pretty ClassConstructor where
+    pretty (ClassConstructor args requires) =
         text "constructor" <+> 
         parens (hcat (punctuate (comma <> space) (map prettySig args))) <+>
         prettyMaybe requires (\req -> indent 4 (text "requires" <+> text req <> line))
 
-instance Pretty TraitMemberMethod where
-    pretty (TraitMemberMethod x args mRet ensures requires) =
+instance Pretty ClassMemberMethod where
+    pretty (ClassMemberMethod x args mRet ensures requires) =
         text "method" <+> text x <>
         parens (hcat (punctuate (comma <> space) (map prettySig args))) <+>
         prettyMaybe mRet (\ret -> text "returns" <+> parens (prettySig ret)) <> line <>

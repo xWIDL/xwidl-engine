@@ -1,9 +1,13 @@
+dictionary BlobPropertyBag {
+  DOMString type_ = "";
+};
+
 [Constructor(optional sequence<BlobPart> blobParts, optional BlobPropertyBag options),
 Exposed=(Window,Worker)]
 interface Blob {
 
   readonly attribute unsigned long long size;
-  readonly attribute DOMString type;
+  readonly attribute DOMString type_; // FIXME: escape keyword like "type" rather than modify it
   readonly attribute boolean isClosed;
 
   //slice Blob into byte-ranged chunks
@@ -13,10 +17,6 @@ interface Blob {
             optional DOMString contentType);
   void close();
 
-};
-
-dictionary BlobPropertyBag {
-  DOMString type = "";
 };
 
 typedef (BufferSource or Blob or USVString) BlobPart;

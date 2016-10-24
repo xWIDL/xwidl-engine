@@ -108,7 +108,7 @@ run = do
     where
         initTargetMethod = TopLevelMethod {
             _tlName = "Main",
-            _tlArgs = M.singleton "cb" (DTyClass "CallbackTrait"),
+            _tlArgs = M.singleton "cb" (DTyClass "CallbackClass"),
             _tlRequires = [DTerm (DRel NotEqual (DVal (DVar "cb")) (DVal (DPrim PNull)))],
             _tlBody = []
         }
@@ -434,18 +434,18 @@ compileExpr other = throwE $ "Can't compile Expr " ++ show other
 
 -- Misc
 
-andRequires :: String -> TraitMemberMethod -> TraitMemberMethod
+andRequires :: String -> ClassMemberMethod -> ClassMemberMethod
 andRequires r = modifyRequires (\case
                                     Just s  -> Just ("(" ++ s ++ ") && " ++ r)
                                     Nothing -> Just r)
 
-letBindRequires :: String -> DyExpr -> TraitMemberMethod -> TraitMemberMethod
+letBindRequires :: String -> DyExpr -> ClassMemberMethod -> ClassMemberMethod
 letBindRequires x e = modifyRequires (fmap (\s -> "var " ++ x ++ " := " ++ prettyShow e ++ "; (" ++ s ++ ")"))
 
-modifyRequires :: (Maybe String -> Maybe String) -> TraitMemberMethod -> TraitMemberMethod
+modifyRequires :: (Maybe String -> Maybe String) -> ClassMemberMethod -> ClassMemberMethod
 modifyRequires f m = m { _tmRequires = f (_tmRequires m) }
 
-modifyEnsures :: (Maybe String -> Maybe String) -> TraitMemberMethod -> TraitMemberMethod
+modifyEnsures :: (Maybe String -> Maybe String) -> ClassMemberMethod -> ClassMemberMethod
 modifyEnsures f m = m { _tmEnsures = f (_tmEnsures m) }
 
 queryCallbackSpec :: OperationOrConstructor -> Name -> CallbackSpec
@@ -458,13 +458,13 @@ getSat :: ServeReq Report
 getSat = do
     datatypes <- _datatypes <$> get
     tlm <- _tlm <$> get
-    traits <- lookupTraits
+    traits <- lookupClasss
     modify (\s -> s { _names = M.empty, _traitsNew = Nothing })
     prelude <- _prelude <$> get
     let src = prelude ++ "\n" ++ pprintDatatypes datatypes ++ "\n" ++
               unlines (map prettyShow $ M.elems traits) ++ "\n" ++ show (pretty tlm)
     logging ("Getting sat from REST...tlm: \n" ++ src)
-    ans <- liftIO $ askDafny (Local "/home/zhangz/xwidl/dafny/Binaries") src
+    ans <- liftIO $ askDafny (Local "/home/zz/xwidl/dafny/Binaries") src
     case ans of
         Right ret -> do
             logging ("Got sat: " ++ show ret)
@@ -505,40 +505,40 @@ addValueMethod iname val = do
             _ -> throwE $ "can't set attribute as " ++ show val
     fname <- fresh
     ty <- iTypeToDyType <$> inferJsValType val
-    let mtd = TraitMemberMethod {
+    let mtd = ClassMemberMethod {
         _tmName = fname,
         _tmArgs = [],
         _tmRet  = Just ("ret", ty),
         _tmEnsures = Just ens,
         _tmRequires = Nothing
     }
-    modifyTrait iname (\t -> t { _tmethods = M.insert fname mtd (_tmethods t) }) (return ())
+    modifyClass iname (\t -> t { _tmethods = M.insert fname mtd (_tmethods t) }) (return ())
     return fname
 
 
 -- NOTE: Side-effect free
-withModifiedMethod :: String -> String -> (TraitMemberMethod -> TraitMemberMethod) -> ServeReq Report -> ServeReq Report
+withModifiedMethod :: String -> String -> (ClassMemberMethod -> ClassMemberMethod) -> ServeReq Report -> ServeReq Report
 withModifiedMethod tname fname f m = do
-    withModifiedTrait tname (\t ->
+    withModifiedClass tname (\t ->
         let mtds = _tmethods t in
         case M.lookup fname mtds of
             Just mtd -> t { _tmethods = M.insert fname (f mtd) mtds }
             Nothing  -> t) m
 
 -- NOTE: has side-effect
-withCopiedMethod :: String -> String -> (TraitMemberMethod -> TraitMemberMethod) ->
+withCopiedMethod :: String -> String -> (ClassMemberMethod -> ClassMemberMethod) ->
                     (String -> ServeReq Report) -> ServeReq Report
 withCopiedMethod tname baseFname f m = do
     x <- fresh
     let newFname = baseFname ++ x
-    modifyTrait tname (\t ->
+    modifyClass tname (\t ->
         let mtds = _tmethods t in
         case M.lookup baseFname mtds of
             Just mtd -> t { _tmethods = M.insert newFname (f (mtd { _tmName = newFname })) mtds }
             Nothing  -> t) (m newFname)
 
-modifyTrait x f m = do
-    traits <- lookupTraits
+modifyClass x f m = do
+    traits <- lookupClasss
     case M.lookup x traits of
         Just t -> do
             modify (\s -> s { _traits = M.insert x (f t) traits })
@@ -546,9 +546,9 @@ modifyTrait x f m = do
         Nothing -> throwE "Invalid interface name"
 
 -- NOTE: Side-effect free
-withModifiedTrait :: String -> (Trait -> Trait) -> ServeReq a -> ServeReq a
-withModifiedTrait x f m = do
-    traits <- lookupTraits
+withModifiedClass :: String -> (Class -> Class) -> ServeReq a -> ServeReq a
+withModifiedClass x f m = do
+    traits <- lookupClasss
     case M.lookup x traits of
         Just t -> do
             modify (\s -> s { _traits = M.insert x (f t) traits })

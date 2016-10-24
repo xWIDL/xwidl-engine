@@ -1,4 +1,4 @@
--- Translation from xIWDL spec to Dafny traits
+-- Translation from xIWDL spec to Dafny classs
 {-# LANGUAGE TupleSections #-}
 
 module Language.Dafny.Translate (
@@ -28,17 +28,17 @@ data TransState = TransState {
     _datatypes :: Datatypes
 }
 
-translateSpec :: Spec -> Either String (M.Map String Trait, Datatypes)
+translateSpec :: Spec -> Either String (M.Map String Class, Datatypes)
 translateSpec s@(Spec ifaces dicts _ _) =
-    fmap (\(traits, s') -> (traits, _datatypes s'))
+    fmap (\(classes, s') -> (classes, _datatypes s'))
          (runExcept (runStateT m (TransState { _spec = s, _datatypes = M.empty })))
     where
         m = do
-                ifaceTraits <- M.fromList <$> mapM translateIface (M.elems ifaces)
-                dictTraits <- M.fromList <$> mapM translateDict (M.elems dicts)
-                return (ifaceTraits `M.union` dictTraits)
+                ifaceClasses <- M.fromList <$> mapM translateIface (M.elems ifaces)
+                dictClasses <- M.fromList <$> mapM translateDict (M.elems dicts)
+                return (ifaceClasses `M.union` dictClasses)
 
-translateIface :: Interface -> Trans (String, Trait)
+translateIface :: Interface -> Trans (String, Class)
 translateIface (Interface iname mInherit constructors _consts attrs gAttrs operations) = do
     constrs <- case constructors of
                 InterfaceConstructors conss -> mapM translateConstructor conss
@@ -57,18 +57,18 @@ translateIface (Interface iname mInherit constructors _consts attrs gAttrs opera
             ifaces <- _ifaces . _spec <$> get
             case M.lookup parent ifaces of
                 Just piface -> do -- TODO: optimization
-                    Trait _ pattrs pcons pmethods <- snd <$> translateIface piface
-                    return (tname, Trait tname (pattrs `M.union` allAttrs) (pcons ++ constrs) (pmethods `M.union` methods))
+                    Class _ pattrs pcons pmethods <- snd <$> translateIface piface
+                    return (tname, Class tname (pattrs `M.union` allAttrs) (pcons ++ constrs) (pmethods `M.union` methods))
                 Nothing -> throwError $ "Invalid inheritance: " ++ show parent
         Nothing ->
-            return (tname, Trait tname allAttrs constrs methods)
+            return (tname, Class tname allAttrs constrs methods)
     where
-        defConstructor = TraitConstructor {
+        defConstructor = ClassConstructor {
             _tcArgs = [],
             _tcRequires = Nothing
         }
 
-        defSetter fname = TraitMemberMethod {
+        defSetter fname = ClassMemberMethod {
             _tmName = fname,
             _tmArgs = [],
             _tmRet  = Nothing,
@@ -76,7 +76,7 @@ translateIface (Interface iname mInherit constructors _consts attrs gAttrs opera
             _tmRequires = Nothing
         }
 
-translateDict :: Dictionary -> Trans (String, Trait)
+translateDict :: Dictionary -> Trans (String, Class)
 translateDict (Dictionary dname mInherit dmembers) = do
     let attrs = M.fromList $ map (\(DictionaryMember ty x _) ->
                                         (unName x, (unName x, iTypeToDyType ty)))
@@ -86,7 +86,7 @@ translateDict (Dictionary dname mInherit dmembers) = do
     -- let bindAttrsStr = join " && " (map (\k -> "ret." ++ k ++ " == " ++ k) (M.keys attrs))
     -- XXX: fix dictionary binding
     -- constructor
-    let cons = TraitConstructor {
+    let cons = ClassConstructor {
                     _tcArgs = [],
                     _tcRequires = Nothing
                 }
@@ -95,22 +95,22 @@ translateDict (Dictionary dname mInherit dmembers) = do
             dicts <- _dicts . _spec <$> get
             case M.lookup parent dicts of
                 Just pdict -> do -- TODO: optimization
-                    Trait _ pattrs pcons pmethods <- snd <$> translateDict pdict
-                    return (tname, Trait tname (pattrs `M.union` attrs) (cons:pcons) pmethods)
+                    Class _ pattrs pcons pmethods <- snd <$> translateDict pdict
+                    return (tname, Class tname (pattrs `M.union` attrs) (cons:pcons) pmethods)
                 Nothing -> throwError $ "Invalid inheritance: " ++ show parent
         Nothing ->
-            return (tname, Trait tname attrs [cons] M.empty)
+            return (tname, Class tname attrs [cons] M.empty)
 
-translateConstructor :: InterfaceConstructor -> Trans TraitConstructor
+translateConstructor :: InterfaceConstructor -> Trans ClassConstructor
 translateConstructor InterfaceConstructor{..} = do
     args <- mapM (\(Argument x ity _) -> (unName x,) <$> iType_ToDyType ity) _icArgs
-    -- XXX: optional args
-    return TraitConstructor {
-            _tcArgs = args,
+    optargs <- mapM (\(Argument x ity _) -> (unName x,) . DTyOpt <$> iType_ToDyType ity) _icOptArgs
+    return ClassConstructor {
+            _tcArgs = args ++ optargs,
             _tcRequires = _icRequires
     }
 
-translateMethod :: Operation -> Trans TraitMemberMethod
+translateMethod :: Operation -> Trans ClassMemberMethod
 translateMethod Operation{..} = do
     cbs <- _cbs . _spec <$> get
     
@@ -120,7 +120,7 @@ translateMethod Operation{..} = do
     let args' = args ++ optargs
     let retty = fmap (\ty -> ("ret", iTypeToDyType ty)) _imRet
     
-    return TraitMemberMethod {
+    return ClassMemberMethod {
         _tmName = unName _imName,
         _tmArgs = args',
         _tmRet  = retty,
@@ -134,7 +134,7 @@ replaceCb cbs arg = do
         (ITySingle (TyInterface n)) -> do
             case M.lookup n cbs of
                 Nothing -> arg
-                Just _  -> Argument (_argName arg) (ITySingle (TyInterface $ Name "CallbackTrait")) (_argOptDef arg)
+                Just _  -> Argument (_argName arg) (ITySingle (TyInterface $ Name "CallbackClass")) (_argOptDef arg)
         _ -> arg
 
 iType_ToDyType :: IType_ -> Trans DyType

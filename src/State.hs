@@ -26,10 +26,10 @@ data SessionState = SessionState {
     _tlm :: TopLevelMethod,
     -- Original spec
     _spec :: Spec,
-    -- Traits text
-    _traits :: M.Map String Trait,
+    -- Classs text
+    _traits :: M.Map String Class,
     -- New traits, which will be used as part of code emission if avaiable
-    _traitsNew :: Maybe (M.Map String Trait),
+    _traitsNew :: Maybe (M.Map String Class),
     _datatypes :: M.Map String [(String, DyType)],
     -- Primitive type domains
     _pDomains :: M.Map PrimType [JAssert],
@@ -134,7 +134,7 @@ lookupCbMaybe (TyInterface n) = do
         Just cb -> return $ Just cb
 lookupCbMaybe _ = return Nothing
 
-lookupTraits = do
+lookupClasss = do
     tn <- _traitsNew <$> get
     case tn of
         Just tn -> return tn
@@ -150,17 +150,17 @@ lookupDefinition name = do
         _ -> return Nothing
 
 -- Updates
-updateMethod :: String -> String -> (TraitMemberMethod -> TraitMemberMethod) -> ServeReq ()
+updateMethod :: String -> String -> (ClassMemberMethod -> ClassMemberMethod) -> ServeReq ()
 updateMethod tname fname f = do
-    updateTrait tname (\t ->
+    updateClass tname (\t ->
         let mtds = _tmethods t in
         case M.lookup fname mtds of
             Just mtd -> t { _tmethods = M.insert fname (f mtd) mtds }
             Nothing  -> t)
 
-updateTrait :: String -> (Trait -> Trait) -> ServeReq ()
-updateTrait x f = do
-    traits <- lookupTraits
+updateClass :: String -> (Class -> Class) -> ServeReq ()
+updateClass x f = do
+    traits <- lookupClasss
     case M.lookup x traits of
         Just t -> modify (\s -> s { _traitsNew = Just (M.insert x (f t) traits)})
         Nothing -> return ()
