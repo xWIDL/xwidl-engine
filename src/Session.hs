@@ -170,10 +170,12 @@ handleGet lvar name@(Name nameStr) = do
                                        (inlineAssCtx (\_ -> return ()) (DTerm (DAccess x nameStr)))
     return $ Sat (jsValRet, Nothing)
 
-handleUnionCall' :: LVar -> Name -> [JsUnionVal] -> ServeReq Reply
+handleUnionCall' :: LVar -> Name -> [JsValStr] -> ServeReq Reply
 handleUnionCall' lvar f args = do
     op <- lookupOperationWithLvar f lvar
-    handleUnionCall lvar (Op op) args
+    case sequence $ map (\(JsValStr s) -> parseVal s) args of
+        Left e -> throwE $ "parse JsValStr error: " ++ e
+        Right args' -> handleUnionCall lvar (Op op) args'
 
 handleUnionCall :: LVar -> OperationOrConstructor -> [JsUnionVal] -> ServeReq Reply
 handleUnionCall lvar ooc uvals = do
@@ -415,6 +417,8 @@ compilePrim (JVPrim pty assert) _ = do
     addArg x (pTyToDTy pty)
     addRequire de
     return (DTerm (DVal (DVar x)))
+compilePrim (JVConst p) _ = return $ DTerm (DVal $ DPrim p)
+compilePrim x _ = error $ "Unhandled case in compilePrim: " ++ show x
 
 compileLVar :: LVar -> ServeReq String
 compileLVar = \case

@@ -7,7 +7,7 @@ Exposed=(Window,Worker)]
 interface Blob {
 
   readonly attribute unsigned long long size;
-  readonly attribute DOMString type_; // FIXME: escape keyword like "type" rather than modify it
+  readonly attribute DOMString type_; // FIXME (issue #27): escape keyword like "type" rather than modify it
   readonly attribute boolean isClosed;
 
   //slice Blob into byte-ranged chunks
@@ -19,4 +19,4 @@ interface Blob {
 
 };
 
-// typedef (BufferSource or Blob or USVString) BlobPart;
+// typedef (BufferSource or Blob or USVString) BlobPart; // FIXME (issue #21): Two-pass translation
